@@ -124,10 +124,10 @@ def run(rank, size):
 
 def init_process(rank, size, fn, backend='nccl'):
     """ Initialize the distributed environment. """
-    os.environ['MASTER_ADDR'] = '192.168.10.59'
-    os.environ['MASTER_PORT'] = '29500'
+    # os.environ['MASTER_ADDR'] = '192.168.10.59'
+    # os.environ['MASTER_PORT'] = '29501'
     os.environ['NCCL_DEBUG'] = 'INFO'
-    dist.init_process_group(backend, rank=rank, world_size=size)
+    dist.init_process_group(backend, init_method='tcp://192.168.10.59:29501', rank=rank, world_size=size)
     print("Starting to run...")
     fn(rank, size)
 
