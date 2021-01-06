@@ -1,5 +1,3 @@
-"""run.py:"""
-#!/usr/bin/env python
 import os
 import math
 import sys
@@ -12,6 +10,7 @@ import torch.nn.functional as F
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from torch.multiprocessing import Process
+
 
 class Net(nn.Module):
     def __init__(self):
@@ -38,8 +37,10 @@ class Net(nn.Module):
         output = F.log_softmax(x, dim=1)
         return output
 
-""" Dataset partitioning helper """
+
 class Partition(object):
+
+    """ Dataset partitioning helper """
 
     def __init__(self, data, index):
         self.data = data
@@ -69,8 +70,10 @@ class DataPartitioner(object):
     def use(self, partition):
         return Partition(self.data, self.partitions[partition])
 
-""" Partitioning MNIST """
+
 def partition_dataset():
+    """ Partitioning MNIST """
+
     dataset = datasets.MNIST('./data', train=True, download=True,
                              transform=transforms.Compose([
                                  transforms.ToTensor(),
@@ -82,23 +85,64 @@ def partition_dataset():
     partition = DataPartitioner(dataset, partition_sizes)
     partition = partition.use(dist.get_rank())
     train_set = torch.utils.data.DataLoader(partition,
-                                         batch_size=int(bsz),
-                                         shuffle=True)
+                                            batch_size=int(bsz),
+                                            shuffle=True)
     return train_set, bsz
 
-""" Gradient averaging. """
+
+def built_in_allreduce(send):
+    dist.all_reduce(send, op=dist.reduce_op.SUM)
+    send /= float(dist.get_world_size())
+
+
+def ring_all_reduce(send):
+    """
+    Custom ring all-reduce fucntion that averages the gradients.
+
+    :param send: The gradients computed at an individual node. The
+        function overwrites them with the shared averages.
+    """
+
+    rank = dist.get_rank()
+    size = dist.get_world_size()
+    chunks = torch.chunk(send, size)
+    recv_buffer = chunks[0].clone()
+
+    right = (rank + 1) % size
+    left = (rank-1) % size
+
+    # First pass
+    for i in range(size - 1):
+        to_send = (rank-i) % size
+        to_recv = (to_send - 1) % size
+        send_req = dist.isend(chunks[to_send], right)
+        dist.recv(recv_buffer, left)        # Receiving needs to be blocking
+        chunks[to_recv] += recv_buffer
+
+    send_req.wait()     # Need to wait till sending is finished
+
+    # We now have result[r+1] on node with rank r
+
+    # Second pass
+    for i in range(size-1):
+        to_send = (rank - i + 1) % size
+        to_recv = (to_send - 1) % size
+        send_req = dist.isend(chunks[to_send], right)
+        dist.recv(recv_buffer, left)         # Receiving needs to be blocking
+        chunks[to_recv][:] = recv_buffer[:]  # [:] indicates deepcopy
+
+    send_req.wait()     # Need to wait till sending is finished
+
+    # Dividing result by the number of devices
+    send /= float(size)
+
+
 def average_gradients(model):
-    size = float(dist.get_world_size())
     for param in model.parameters():
-        dist.all_reduce(param.grad.data, op=dist.reduce_op.SUM)
-        param.grad.data /= size
+        ring_all_reduce(param.grad.data)
 
 
 def run(rank, size):
-    # group = dist.new_group([0, 1])
-    # tensor = torch.ones(1)
-    # dist.all_reduce(tensor, op=dist.ReduceOp.SUM, group=group)
-    # print('Rank ', rank, ' has data ', tensor[0])
     torch.manual_seed(1234)
     train_set, bsz = partition_dataset()
     device = torch.device("cuda:{}".format(0))
@@ -107,7 +151,7 @@ def run(rank, size):
                           lr=0.01, momentum=0.5)
 
     num_batches = math.ceil(len(train_set.dataset) / float(bsz))
-    for epoch in range(10):
+    for epoch in range(2):
         epoch_loss = 0.0
         for data, target in train_set:
             data, target = data.to(device), target.to(device)
@@ -122,19 +166,26 @@ def run(rank, size):
               epoch, ': ', epoch_loss / num_batches)
 
 
-def init_process(rank, size, fn, backend='nccl'):
+def init_process(rank, size, fn, backend='gloo'):
     """ Initialize the distributed environment. """
-    # os.environ['MASTER_ADDR'] = '192.168.10.59'
-    # os.environ['MASTER_PORT'] = '29501'
+    os.environ['MASTER_ADDR'] = '192.168.0.193'
+    os.environ['MASTER_PORT'] = '29501'
     os.environ['NCCL_DEBUG'] = 'INFO'
-    dist.init_process_group(backend, init_method='tcp://192.168.10.59:29501', rank=rank, world_size=size)
-    print("Starting to run...")
+    dist.init_process_group(backend, rank=rank, world_size=size)
+    print("Connection initialised")
     fn(rank, size)
 
 
 if __name__ == "__main__":
     size = int(sys.argv[1])
     rank = int(sys.argv[2])
+    init_process(rank, size, run)
     p = Process(target=init_process, args=(rank, size, run))
-    p.start()
-    p.join()
+
+    try:
+        p.start()
+        p.join()
+    except KeyboardInterrupt:
+        print("Shutting down...")
+        p.kill()
+        sys.exit(0)
