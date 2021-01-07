@@ -168,10 +168,11 @@ def run(rank, size):
 
 def init_process(rank, size, fn, backend='gloo'):
     """ Initialize the distributed environment. """
-    os.environ['MASTER_ADDR'] = '192.168.0.193'
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '29501'
     os.environ['NCCL_DEBUG'] = 'INFO'
     dist.init_process_group(backend, rank=rank, world_size=size)
+
     print("Connection initialised")
     fn(rank, size)
 
@@ -179,7 +180,6 @@ def init_process(rank, size, fn, backend='gloo'):
 if __name__ == "__main__":
     size = int(sys.argv[1])
     rank = int(sys.argv[2])
-    init_process(rank, size, run)
     p = Process(target=init_process, args=(rank, size, run))
 
     try:
