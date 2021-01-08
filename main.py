@@ -158,18 +158,33 @@ def run(rank, size):
     for epoch in range(2):
         epoch_loss = 0.0
         for data, target in train_set:
+
+            # Moving training data to cuda device
             data, target = data.to(device), target.to(device)
+
+            # Feed forward and backprop
             optimizer.zero_grad()
             output = model(data)
             loss = F.nll_loss(output, target)
             epoch_loss += loss.item()
             loss.backward()
+
+            # Move gradients to CPU
             grads = move_gradients_to_cpu(model)
+
+            # Ring all-reduce
+            for grad in grads:
+                ring_all_reduce(grad)
+
+            # Copy back reduced gradients to the GPU
             i = 0
             for param in model.parameters():
                 param.grad.data[:] = grads[i]
                 i += 1
+
+            # Perform optimiser step
             optimizer.step()
+
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', epoch_loss / num_batches)
 
