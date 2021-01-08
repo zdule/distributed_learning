@@ -113,6 +113,7 @@ def ring_all_reduce(send):
 
     # First pass
     for i in range(size - 1):
+        print(i)
         to_send = (rank-i) % size
         to_recv = (to_send - 1) % size
         send_req = dist.isend(chunks[to_send], right)
@@ -137,9 +138,12 @@ def ring_all_reduce(send):
     send /= float(size)
 
 
-def average_gradients(model):
-    for param in model.parameters():
-        ring_all_reduce(param.grad.data)
+# def average_gradients():
+#     for param in model.parameters():
+#         ring_all_reduce(param.grad.data)
+
+def move_gradients_to_cpu(model):
+    return [param.grad.data.to("cpu") for param in model.parameters()]
 
 
 def run(rank, size):
@@ -160,7 +164,11 @@ def run(rank, size):
             loss = F.nll_loss(output, target)
             epoch_loss += loss.item()
             loss.backward()
-            average_gradients(model)
+            grads = move_gradients_to_cpu(model)
+            i = 0
+            for param in model.parameters():
+                param.grad.data[:] = grads[i]
+                i += 1
             optimizer.step()
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', epoch_loss / num_batches)
@@ -168,10 +176,17 @@ def run(rank, size):
 
 def init_process(rank, size, fn, backend='gloo'):
     """ Initialize the distributed environment. """
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_ADDR'] = '192.168.0.193'
     os.environ['MASTER_PORT'] = '29501'
-    os.environ['NCCL_DEBUG'] = 'INFO'
-    dist.init_process_group(backend, rank=rank, world_size=size)
+    # os.environ['WORLD_SIZE'] = '2'
+    # os.environ['RANK'] = '0'
+    # os.environ['NCCL_DEBUG'] = 'INFO'
+    os.environ['GLOO_SOCKET_IFNAME'] = 'wlo1'
+    # print(os.environ.get('GLOO_SOCKET_IFNAME'))
+    os.environ['TP_SOCKET_IFNAME'] = 'wlo1'
+    dist.init_process_group(backend,
+                            # init_method="tcp://192.168.0.193:29501",
+                            rank=rank, world_size=size)
 
     print("Connection initialised")
     fn(rank, size)
