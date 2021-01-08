@@ -3,91 +3,13 @@ import math
 import sys
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 import torch.optim as optim
 import torch.random
-import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
 from torch.multiprocessing import Process
 
-
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, 3, 1)
-        self.conv2 = nn.Conv2d(32, 64, 3, 1)
-        self.dropout1 = nn.Dropout(0.25)
-        self.dropout2 = nn.Dropout(0.5)
-        self.fc1 = nn.Linear(9216, 128)
-        self.fc2 = nn.Linear(128, 10)
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = F.relu(x)
-        x = F.max_pool2d(x, 2)
-        x = self.dropout1(x)
-        x = torch.flatten(x, 1)
-        x = self.fc1(x)
-        x = F.relu(x)
-        x = self.dropout2(x)
-        x = self.fc2(x)
-        output = F.log_softmax(x, dim=1)
-        return output
-
-
-class Partition(object):
-
-    """ Dataset partitioning helper """
-
-    def __init__(self, data, index):
-        self.data = data
-        self.index = index
-
-    def __len__(self):
-        return len(self.index)
-
-    def __getitem__(self, index):
-        data_idx = self.index[index]
-        return self.data[data_idx]
-
-
-class DataPartitioner(object):
-
-    def __init__(self, data, sizes=[0.7, 0.2, 0.1], seed=1234):
-        self.data = data
-        self.partitions = []
-        data_len = len(data)
-        indexes = torch.randperm(data_len)
-
-        for frac in sizes:
-            part_len = int(frac * data_len)
-            self.partitions.append(indexes[0:part_len])
-            indexes = indexes[part_len:]
-
-    def use(self, partition):
-        return Partition(self.data, self.partitions[partition])
-
-
-def partition_dataset():
-    """ Partitioning MNIST """
-
-    dataset = datasets.MNIST('./data', train=True, download=True,
-                             transform=transforms.Compose([
-                                 transforms.ToTensor(),
-                                 transforms.Normalize((0.1307,), (0.3081,))
-                             ]))
-    size = dist.get_world_size()
-    bsz = 128 / float(size)         # Divide the batch by the no. workers
-    partition_sizes = [1.0 / size for _ in range(size)]
-    partition = DataPartitioner(dataset, partition_sizes)
-    partition = partition.use(dist.get_rank())
-    train_set = torch.utils.data.DataLoader(partition,
-                                            batch_size=int(bsz),
-                                            shuffle=True)
-    return train_set, bsz
+from network import Net
+from data import partition_dataset
 
 
 def built_in_allreduce(send):
@@ -118,7 +40,7 @@ def ring_all_reduce(send):
         to_recv = (to_send - 1) % size
         send_req = dist.isend(chunks[to_send], right)
         dist.recv(recv_buffer, left)        # Receiving needs to be blocking
-        chunks[to_recv] += recv_buffer
+        chunks[to_recv][:] += recv_buffer[:]
 
     send_req.wait()     # Need to wait till sending is finished
 
@@ -137,10 +59,6 @@ def ring_all_reduce(send):
     # Dividing result by the number of devices
     send /= float(size)
 
-
-# def average_gradients():
-#     for param in model.parameters():
-#         ring_all_reduce(param.grad.data)
 
 def move_gradients_to_cpu(model):
     return [param.grad.data.to("cpu") for param in model.parameters()]
@@ -193,15 +111,9 @@ def init_process(rank, size, fn, backend='gloo'):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = '192.168.0.193'
     os.environ['MASTER_PORT'] = '29501'
-    # os.environ['WORLD_SIZE'] = '2'
-    # os.environ['RANK'] = '0'
-    # os.environ['NCCL_DEBUG'] = 'INFO'
     os.environ['GLOO_SOCKET_IFNAME'] = 'wlo1'
-    # print(os.environ.get('GLOO_SOCKET_IFNAME'))
-    os.environ['TP_SOCKET_IFNAME'] = 'wlo1'
-    dist.init_process_group(backend,
-                            # init_method="tcp://192.168.0.193:29501",
-                            rank=rank, world_size=size)
+
+    dist.init_process_group(backend, rank=rank, world_size=size)
 
     print("Connection initialised")
     fn(rank, size)
