@@ -35,7 +35,6 @@ def ring_all_reduce(send):
 
     # First pass
     for i in range(size - 1):
-        print(i)
         to_send = (rank-i) % size
         to_recv = (to_send - 1) % size
         send_req = dist.isend(chunks[to_send], right)
@@ -64,50 +63,90 @@ def move_gradients_to_cpu(model):
     return [param.grad.data.to("cpu") for param in model.parameters()]
 
 
-def run(rank, size):
-    torch.manual_seed(1234)
-    train_set, bsz = partition_dataset()
-    device = torch.device("cuda:{}".format(0))
-    model = Net().to(device)
-    optimizer = optim.SGD(model.parameters(),
-                          lr=0.01, momentum=0.5)
+def move_gradients_to_gpu_and_optimise(model, grads, optimiser):
+    for i, param in enumerate(model.parameters()):
+        param.grad.data[:] = grads[i]
+    optimiser.step()
 
-    num_batches = math.ceil(len(train_set.dataset) / float(bsz))
+
+def forward_and_backprop(device, model, optimizer, data, target, loss_ret):
+    # Moving training data to cuda device
+    data, target = data.to(device), target.to(device)
+
+    # Feed forward and backprop
+    optimizer.zero_grad()
+    output = model(data)
+    loss = F.nll_loss(output, target)
+    loss.backward()
+
+    loss_ret.value = loss
+
+
+def run(rank, size, node_dev, total_dev):
+    torch.manual_seed(1234)
+    train_sets, bsz = partition_dataset(node_dev, total_dev)
+
+    devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
+    models = [Net().to(device) for device in devices]
+    optimizers = [optim.SGD(model.parameters(),
+                            lr=0.01, momentum=0.5) for model in models]
+
+    num_batches = math.ceil(len(train_sets[0].dataset) / float(bsz))
     for epoch in range(2):
         epoch_loss = 0.0
-        for data, target in train_set:
 
-            # Moving training data to cuda device
-            data, target = data.to(device), target.to(device)
+        for b in range(num_batches):
 
-            # Feed forward and backprop
-            optimizer.zero_grad()
-            output = model(data)
-            loss = F.nll_loss(output, target)
-            epoch_loss += loss.item()
-            loss.backward()
+            # Run feed-forward and backprop for each model
+            processes = []
+            for i in range(node_dev):
+                data, target = next(train_sets[i])
+                loss = torch.multiprocessing.Value("d", 0.0, lock=False)
+                p = Process(
+                    target=forward_and_backprop,
+                    args=(
+                        devices[i],
+                        models[i],
+                        optimizers[i],
+                        data,
+                        target,
+                        loss
+                    )
+                )
+                processes.append(p)
+                p.start()
 
-            # Move gradients to CPU
-            grads = move_gradients_to_cpu(model)
+            for p in processes:
+                p.wait()
 
-            # Ring all-reduce
-            for grad in grads:
-                ring_all_reduce(grad)
+            # Summing local gradients
+            grads = [move_gradients_to_cpu(model) for model in models]
+            for g, grad in enumerate(grads[0]):
+                for dev in range(1, node_dev):
+                    grad[:] += grads[dev][g]
+            local_grad = grads[0]
 
-            # Copy back reduced gradients to the GPU
-            i = 0
-            for param in model.parameters():
-                param.grad.data[:] = grads[i]
-                i += 1
+            # All-reduce grads across multiple nodes
+            ring_all_reduce(local_grad)
 
-            # Perform optimiser step
-            optimizer.step()
+            # Move results back to GPU and perform optimising
+            processes = []
+            for i in range(node_dev):
+                p = Process(
+                    target=move_gradients_to_gpu_and_optimise,
+                    args=(models[i], local_grad, optimizers[i])
+                )
+                processes.append(p)
+                p.start()
+
+            for p in processes:
+                p.wait()
 
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', epoch_loss / num_batches)
 
 
-def init_process(rank, size, fn, backend='gloo'):
+def init_process(rank, size, node_dev, total_dev, fn, backend='gloo'):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = '192.168.0.193'
     os.environ['MASTER_PORT'] = '29501'
@@ -116,13 +155,16 @@ def init_process(rank, size, fn, backend='gloo'):
     dist.init_process_group(backend, rank=rank, world_size=size)
 
     print("Connection initialised")
-    fn(rank, size)
+    fn(rank, size, node_dev, total_dev)
 
 
 if __name__ == "__main__":
     size = int(sys.argv[1])
     rank = int(sys.argv[2])
-    p = Process(target=init_process, args=(rank, size, run))
+    node_dev = int(sys.argv[3])
+    total_dev = int(sys.argv[4])
+    p = Process(target=init_process, args=(
+        rank, size, node_dev, total_dev, run))
 
     try:
         p.start()

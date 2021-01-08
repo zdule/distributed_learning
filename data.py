@@ -38,20 +38,23 @@ class DataPartitioner(object):
         return Partition(self.data, self.partitions[partition])
 
 
-def partition_dataset():
-    """ Partitioning MNIST """
+def partition_dataset(node_dev, total_dev):
+    """ 
+    Partitioning MNIST. We assume each node has the same number of devices.
+    """
 
     dataset = datasets.MNIST('./data', train=True, download=True,
                              transform=transforms.Compose([
                                  transforms.ToTensor(),
                                  transforms.Normalize((0.1307,), (0.3081,))
                              ]))
-    size = dist.get_world_size()
-    bsz = 128 / float(size)         # Divide the batch by the no. workers
-    partition_sizes = [1.0 / size for _ in range(size)]
+    bsz = 128 / float(total_dev)         # Divide the batch by the no. workers
+    partition_sizes = [1.0 / total_dev for _ in range(total_dev)]
     partition = DataPartitioner(dataset, partition_sizes)
-    partition = partition.use(dist.get_rank())
-    train_set = torch.utils.data.DataLoader(partition,
-                                            batch_size=int(bsz),
-                                            shuffle=True)
-    return train_set, bsz
+    partitions = [partition.use(dist.get_rank() * node_dev + i)
+                  for i in range(node_dev)]
+    train_sets = [torch.utils.data.DataLoader(partition,
+                                              batch_size=int(bsz),
+                                              shuffle=True)
+                  for partition in partitions]
+    return train_sets, bsz
