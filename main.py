@@ -13,14 +13,7 @@ from data import partition_dataset
 from utils import Level, print_d
 
 EPOCH_NUM = 2
-
-""" Initialize the distributed environment. """
-os.environ['MASTER_ADDR'] = '192.168.0.193'
-os.environ['MASTER_PORT'] = '29501'
-os.environ['GLOO_SOCKET_IFNAME'] = 'wlo1'
-
-# Events for synchronising end of epochs
-epoch_events = [mp.Event() for _ in range(EPOCH_NUM)]
+epoch_events = []
 
 
 def built_in_allreduce(send):
@@ -203,7 +196,13 @@ def main_process(rank, size, node_dev, total_dev):
 
 
 def init_process(rank, size, node_dev, total_dev, fn, backend='gloo'):
+    """ Initialize the distributed environment. """
+    os.environ['MASTER_ADDR'] = '192.168.0.193'
+    os.environ['MASTER_PORT'] = '29501'
+    os.environ['GLOO_SOCKET_IFNAME'] = 'wlo1'
+
     dist.init_process_group(backend, rank=rank, world_size=size)
+
     print("Connection initialised")
     fn(rank, size, node_dev, total_dev)
 
@@ -215,6 +214,7 @@ if __name__ == "__main__":
     total_dev = int(sys.argv[4])
 
     torch.multiprocessing.set_start_method('spawn')
+    epoch_events = [mp.Event() for _ in range(EPOCH_NUM)]
     p = mp.Process(target=init_process, args=(
         rank, size, node_dev, total_dev, main_process))
 
