@@ -85,6 +85,7 @@ def forward_and_backprop(device, model, optimizer, data, target, loss_ret):
 def run(rank, size, node_dev, total_dev):
     torch.manual_seed(1234)
     train_sets, bsz = partition_dataset(node_dev, total_dev)
+    train_iters = [iter(train_set) for train_set in train_sets]
 
     devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
     models = [Net().to(device) for device in devices]
@@ -100,7 +101,7 @@ def run(rank, size, node_dev, total_dev):
             # Run feed-forward and backprop for each model
             processes = []
             for i in range(node_dev):
-                data, target = train_sets[i][b]
+                data, target = next(train_iters[i])
                 loss = torch.multiprocessing.Value("d", 0.0, lock=False)
                 p = Process(
                     target=forward_and_backprop,
