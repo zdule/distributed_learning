@@ -13,6 +13,14 @@ from data import partition_dataset
 from utils import Level, print_d
 
 EPOCH_NUM = 2
+
+""" Initialize the distributed environment. """
+os.environ['MASTER_ADDR'] = '192.168.0.193'
+os.environ['MASTER_PORT'] = '29501'
+os.environ['GLOO_SOCKET_IFNAME'] = 'wlo1'
+torch.multiprocessing.set_start_method('spawn')
+
+# Setting global events for end of epochs
 epoch_events = [mp.Event() for _ in range(EPOCH_NUM)]
 
 
@@ -177,7 +185,10 @@ def main_process(rank, size, node_dev, total_dev):
                 param[:] /= float(node_dev)
 
                 print_d(f"CPU: Performing allreduce", Level.DEBUG)
-                ring_all_reduce(param)
+                ring_all_reduce(param)    """ Initialize the distributed environment. """
+    os.environ['MASTER_ADDR'] = '192.168.0.193'
+    os.environ['MASTER_PORT'] = '29501'
+    os.environ['GLOO_SOCKET_IFNAME'] = 'wlo1'
 
                 print_d(f"CPU: Sending global grad to GPUs", Level.DEBUG)
                 for queue in from_cpu_queues:
@@ -196,13 +207,7 @@ def main_process(rank, size, node_dev, total_dev):
 
 
 def init_process(rank, size, node_dev, total_dev, fn, backend='gloo'):
-    """ Initialize the distributed environment. """
-    os.environ['MASTER_ADDR'] = '192.168.0.193'
-    os.environ['MASTER_PORT'] = '29501'
-    os.environ['GLOO_SOCKET_IFNAME'] = 'wlo1'
-
     dist.init_process_group(backend, rank=rank, world_size=size)
-
     print("Connection initialised")
     fn(rank, size, node_dev, total_dev)
 
