@@ -10,6 +10,7 @@ import torch.random
 
 from network import Net
 from data import partition_dataset
+from utils import Level, print_d
 
 EPOCH_NUM = 2
 
@@ -35,7 +36,7 @@ def ring_all_reduce(send):
     right = (rank + 1) % size
     left = (rank-1) % size
 
-    # First pass
+    # First passDEBUG_LEVEL
     for i in range(size - 1):
         to_send = (rank-i) % size
         to_recv = (to_send - 1) % size
@@ -93,13 +94,16 @@ def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 
     for _epoch in range(EPOCH_NUM):
+        print_d(f"GPU: Starting epoch {_epoch}", Level.INFO)
 
         for data, target in train_set:
 
+            print_d("GPU: Moving training data to GPU", Level.DEBUG)
             data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
 
             # Feed forward
+            print_d("GPU: Perfroming feed forward and backprop", Level.DEBUG)
             output = model(data)
             loss = F.nll_loss(output, target)
 
@@ -107,14 +111,22 @@ def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
             loss.backward()
 
             # Share result to CPU and read back
+            print_d("GPU: Communicating with CPU", Level.DEBUG)
             for param in model.parameters():
+                print_d("GPU: Sending local grad", Level.DEBUG)
                 to_cpu_queue.put(param.grad.data)
-                result = from_cpu_queue.read()
-                param.grad.data[:] = result
+
+                print_d("GPU: Receving global grad", Level.DEBUG)
+                result = from_cpu_queue.get()
+                result_dev = result.to(device)
                 del result
+
+                param.grad.data[:] = result_dev
 
             # Send back loss for this batch (this also signals
             # that everything has been received)
+
+            print_d("GPU: Sending loss to CPU", Level.DEBUG)
             to_cpu_queue.put(loss.item())
 
             optimizer.step()
@@ -137,27 +149,41 @@ def main_process(rank, size, node_dev, total_dev):
 
     for epoch in range(EPOCH_NUM):
         epoch_losses = [0.0 for _ in devices]
+        print_d(f"CPU: Starting epoch {epoch}", Level.INFO)
 
         for b in range(num_batches):
 
+            print_d(f"CPU: Starting batch {b}", Level.DEBUG)
             # Reset the collected parameters
             for param in buffer_model.parameters():
                 param[:] = 0
 
             # Get the local parameters and allreduce layer-by-layer
+            print_d(f"CPU: Starting communication with GPUs", Level.DEBUG)
             for param in buffer_model.parameters():
+
+                print_d(f"CPU: Receiving local grad from GPUs", Level.DEBUG)
                 for queue in to_cpu_queues:
                     received = queue.get()
-                    param[:] += received[:]
+                    received_cpu = received.to("cpu")
                     del received
+                    param[:] += received_cpu[:]
+                param[:] /= float(node_dev)
+
+                print_d(f"CPU: Performing allreduce", Level.DEBUG)
                 ring_all_reduce(param)
+
+                print_d(f"CPU: Sending global grad to GPUs", Level.DEBUG)
                 for queue in from_cpu_queues:
-                    queue.put(param)
+                    queue.put(param.detach())
 
             # Grab the loss from workers
+            print_d(f"CPU: Receiving loss from GPUs", Level.DEBUG)
             for queue, epoch_loss in zip(to_cpu_queues, epoch_losses):
-                epoch_loss += queue.get()
+                rec = queue.get()
+                epoch_loss += rec
 
+        print_d(f"CPU: Summing epoch loss {sum(epoch_loss)}", Level.INFO)
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', sum(epoch_losses) / num_batches / node_dev)
 
