@@ -93,6 +93,8 @@ def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
     model = Net().to(device)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 
+    worker_loss = 0
+
     for _epoch in range(EPOCH_NUM):
         print_d(f"GPU: Starting epoch {_epoch}", Level.INFO)
 
@@ -127,7 +129,8 @@ def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
             # that everything has been received)
 
             print_d("GPU: Sending loss to CPU", Level.DEBUG)
-            to_cpu_queue.put(loss.item())
+            worker_loss = loss.item()
+            to_cpu_queue.put(worker_loss)
 
             optimizer.step()
 

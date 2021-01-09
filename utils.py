@@ -3,7 +3,7 @@ import enum
 VERBOSE_LEVEL = 3
 
 
-class Level(enum.Enum):
+class Level(enum.IntEnum):
     WARNING = 1
     INFO = 2
     DEBUG = 3
