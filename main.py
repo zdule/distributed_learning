@@ -13,7 +13,6 @@ from data import partition_dataset
 from utils import Level, print_d
 
 EPOCH_NUM = 2
-epoch_events = []
 
 
 def built_in_allreduce(send):
@@ -90,7 +89,7 @@ def forward_and_backprop(device, model, optimizer, data, target, loss_ret):
         print(param.grad)
 
 
-def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
+def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue, epoch_events):
     model = Net().to(device)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 
@@ -147,9 +146,11 @@ def main_process(rank, size, node_dev, total_dev):
     to_cpu_queues = [mp.Queue() for _ in devices]
     from_cpu_queues = [mp.Queue() for _ in devices]
 
+    epoch_events = [mp.Event() for _ in range(EPOCH_NUM)]
+    zipped_epoch_events = [epoch_events for _ in devices]
     buffer_model = Net()
 
-    for args in zip(devices, train_sets, to_cpu_queues, from_cpu_queues):
+    for args in zip(devices, train_sets, to_cpu_queues, from_cpu_queues, zipped_epoch_events):
         p = mp.Process(target=gpu_prcess, args=args)
         p.start()
 
@@ -214,7 +215,6 @@ if __name__ == "__main__":
     total_dev = int(sys.argv[4])
 
     torch.multiprocessing.set_start_method('spawn')
-    epoch_events = [mp.Event() for _ in range(EPOCH_NUM)]
     p = mp.Process(target=init_process, args=(
         rank, size, node_dev, total_dev, main_process))
 
