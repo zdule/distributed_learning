@@ -77,9 +77,8 @@ def forward_and_backprop(device, model, optimizer, data, target, loss_ret):
     optimizer.zero_grad()
     output = model(data)
     loss = F.nll_loss(output, target)
+    loss_ret.value = loss.item()
     loss.backward()
-
-    loss_ret.value = loss
 
 
 def run(rank, size, node_dev, total_dev):
@@ -118,7 +117,7 @@ def run(rank, size, node_dev, total_dev):
                 p.start()
 
             for p in processes:
-                p.wait()
+                p.join()
 
             # Summing local gradients
             grads = [move_gradients_to_cpu(model) for model in models]
@@ -141,7 +140,7 @@ def run(rank, size, node_dev, total_dev):
                 p.start()
 
             for p in processes:
-                p.wait()
+                p.join()
 
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', epoch_loss / num_batches)
@@ -164,6 +163,8 @@ if __name__ == "__main__":
     rank = int(sys.argv[2])
     node_dev = int(sys.argv[3])
     total_dev = int(sys.argv[4])
+
+    torch.multiprocessing.set_start_method('spawn')
     p = Process(target=init_process, args=(
         rank, size, node_dev, total_dev, run))
 
