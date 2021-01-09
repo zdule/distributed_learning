@@ -3,13 +3,15 @@ import math
 import sys
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.random
-from torch.multiprocessing import Process
 
 from network import Net
 from data import partition_dataset
+
+EPOCH_NUM = 2
 
 
 def built_in_allreduce(send):
@@ -60,12 +62,15 @@ def ring_all_reduce(send):
 
 
 def move_gradients_to_cpu(model):
+    for param in model.parameters():
+        print(param.grad)
+        print(param)
     return [param.grad.data.to("cpu") for param in model.parameters()]
 
 
 def move_gradients_to_gpu_and_optimise(model, grads, optimiser):
     for i, param in enumerate(model.parameters()):
-        param.grad.data[:] = grads[i]
+        param.grad.data[:] = grads[i][:]
     optimiser.step()
 
 
@@ -79,71 +84,83 @@ def forward_and_backprop(device, model, optimizer, data, target, loss_ret):
     loss = F.nll_loss(output, target)
     loss_ret.value = loss.item()
     loss.backward()
+    for param in model.parameters():
+        print(param.grad)
 
 
-def run(rank, size, node_dev, total_dev):
+def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
+    model = Net().to(device)
+    optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
+
+    for _epoch in range(EPOCH_NUM):
+
+        for data, target in train_set:
+
+            data, target = data.to(device), target.to(device)
+            optimizer.zero_grad()
+
+            # Feed forward
+            output = model(data)
+            loss = F.nll_loss(output, target)
+
+            # Backpropagation
+            loss.backward()
+
+            # Share result to CPU
+            for param in model.parameters:
+                to_cpu_queue.put(param.grad.data)
+
+            # Get all recuced gradient
+            for param in model.parameters:
+                param.grad.data[:] = from_cpu_queue.get()
+
+            # Send back loss for this batch (this also signals
+            # that everything has been received)
+            to_cpu_queue.put(loss.item())
+
+            optimizer.step()
+
+
+def main_process(rank, size, node_dev, total_dev):
     torch.manual_seed(1234)
     train_sets, bsz = partition_dataset(node_dev, total_dev)
-    train_iters = [iter(train_set) for train_set in train_sets]
+    num_batches = len(train_sets[0])
 
     devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
-    models = [Net().to(device) for device in devices]
-    optimizers = [optim.SGD(model.parameters(),
-                            lr=0.01, momentum=0.5) for model in models]
+    to_cpu_queues = [mp.Queue() for _ in devices]
+    from_cpu_queues = [mp.Queue() for _ in devices]
 
-    num_batches = math.ceil(len(train_sets[0].dataset) / float(bsz))
-    for epoch in range(2):
-        epoch_loss = 0.0
+    buffer_model = Net()
+
+    for args in zip(devices, train_sets, to_cpu_queues, from_cpu_queues):
+        p = mp.Process(target=gpu_prcess, args=args)
+        p.start()
+
+    for epoch in range(EPOCH_NUM):
+        epoch_losses = [0.0 for _ in devices]
 
         for b in range(num_batches):
 
-            # Run feed-forward and backprop for each model
-            processes = []
-            for i in range(node_dev):
-                data, target = next(train_iters[i])
-                loss = torch.multiprocessing.Value("d", 0.0, lock=False)
-                p = Process(
-                    target=forward_and_backprop,
-                    args=(
-                        devices[i],
-                        models[i],
-                        optimizers[i],
-                        data,
-                        target,
-                        loss
-                    )
-                )
-                processes.append(p)
-                p.start()
+            # Reset the collected parameters
+            for param in buffer_model.parameters():
+                param[:] = 0
 
-            for p in processes:
-                p.join()
+            # Get the local parameters and allreduce layer-by-layer
+            for param in buffer_model.parameters():
+                for queue in to_cpu_queues:
+                    received = queue.get()
+                    param[:] += received[:]
+                    del received
+                ring_all_reduce(param)
+                for queue in from_cpu_queues:
+                    queue.put(param)
 
-            # Summing local gradients
-            grads = [move_gradients_to_cpu(model) for model in models]
-            for g, grad in enumerate(grads[0]):
-                for dev in range(1, node_dev):
-                    grad[:] += grads[dev][g]
-            local_grad = grads[0]
-
-            # All-reduce grads across multiple nodes
-            ring_all_reduce(local_grad)
-
-            # Move results back to GPU and perform optimising
-            processes = []
-            for i in range(node_dev):
-                p = Process(
-                    target=move_gradients_to_gpu_and_optimise,
-                    args=(models[i], local_grad, optimizers[i])
-                )
-                processes.append(p)
-                p.start()
-
-            for p in processes:
-                p.join()
+            # Grab the loss from workers
+            for queue, epoch_loss in zip(to_cpu_queues, epoch_losses):
+                epoch_loss += queue.get()
 
         print('Rank ', dist.get_rank(), ', epoch ',
-              epoch, ': ', epoch_loss / num_batches)
+              epoch, ': ', sum(epoch_losses) / num_batches / node_dev)
 
 
 def init_process(rank, size, node_dev, total_dev, fn, backend='gloo'):
@@ -165,8 +182,8 @@ if __name__ == "__main__":
     total_dev = int(sys.argv[4])
 
     torch.multiprocessing.set_start_method('spawn')
-    p = Process(target=init_process, args=(
-        rank, size, node_dev, total_dev, run))
+    p = mp.Process(target=init_process, args=(
+        rank, size, node_dev, total_dev, main_process))
 
     try:
         p.start()
