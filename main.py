@@ -100,7 +100,7 @@ def run(rank, size, node_dev, total_dev):
             # Run feed-forward and backprop for each model
             processes = []
             for i in range(node_dev):
-                data, target = next(train_sets[i])
+                data, target = train_sets[i][b]
                 loss = torch.multiprocessing.Value("d", 0.0, lock=False)
                 p = Process(
                     target=forward_and_backprop,
