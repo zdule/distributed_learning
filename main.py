@@ -106,13 +106,12 @@ def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
             # Backpropagation
             loss.backward()
 
-            # Share result to CPU
-            for param in model.parameters:
+            # Share result to CPU and read back
+            for param in model.parameters():
                 to_cpu_queue.put(param.grad.data)
-
-            # Get all recuced gradient
-            for param in model.parameters:
-                param.grad.data[:] = from_cpu_queue.get()
+                result = from_cpu_queue.read()
+                param.grad.data[:] = result
+                del result
 
             # Send back loss for this batch (this also signals
             # that everything has been received)
