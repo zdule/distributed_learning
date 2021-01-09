@@ -13,6 +13,7 @@ from data import partition_dataset
 from utils import Level, print_d
 
 EPOCH_NUM = 2
+epoch_events = [mp.Event() for _ in range(EPOCH_NUM)]
 
 
 def built_in_allreduce(send):
@@ -95,8 +96,8 @@ def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
 
     worker_loss = 0
 
-    for _epoch in range(EPOCH_NUM):
-        print_d(f"GPU: Starting epoch {_epoch}", Level.INFO)
+    for epoch in range(EPOCH_NUM):
+        print_d(f"GPU: Starting epoch {epoch}", Level.INFO)
 
         for data, target in train_set:
 
@@ -133,6 +134,8 @@ def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
             to_cpu_queue.put(worker_loss)
 
             optimizer.step()
+
+        epoch_events[epoch].wait()
 
 
 def main_process(rank, size, node_dev, total_dev):
@@ -186,6 +189,7 @@ def main_process(rank, size, node_dev, total_dev):
                 rec = queue.get()
                 epoch_loss += rec
 
+        epoch_events[epoch].set()
         print_d(f"CPU: Summing epoch loss {sum(epoch_loss)}", Level.INFO)
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', sum(epoch_losses) / num_batches / node_dev)
