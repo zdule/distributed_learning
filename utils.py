@@ -1,5 +1,6 @@
 import enum
 import os
+import sys
 
 VERBOSE_LEVEL = 2
 
@@ -13,6 +14,7 @@ class Level(enum.IntEnum):
 def print_d(str, level):
     if level <= VERBOSE_LEVEL:
         print(str)
+        sys.stdout.flush()
 
 
 def eval_arg(arg):

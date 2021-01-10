@@ -11,6 +11,7 @@ import torch.random
 from network import Net
 from data import partition_dataset
 from utils import Level, print_d, eval_arg
+import traceback
 
 EPOCH_NUM = 2
 
@@ -34,20 +35,25 @@ def ring_all_reduce(send):
         return
 
     chunks = torch.chunk(send, size)
-    recv_buffer = chunks[0].clone()
+    maxsize = max((chunk.size() for chunk in chunks))
+    recv_buffer = torch.empty(maxsize, dtype=send.dtype)
 
     right = (rank + 1) % size
     left = (rank-1) % size
+
+    send_reqs = []
 
     # First passDEBUG_LEVEL
     for i in range(size - 1):
         to_send = (rank-i) % size
         to_recv = (to_send - 1) % size
-        send_req = dist.isend(chunks[to_send], right)
+        send_reqs.append(dist.isend(chunks[to_send], right))
         dist.recv(recv_buffer, left)        # Receiving needs to be blocking
-        chunks[to_recv][:] += recv_buffer[:]
+        chunks[to_recv][:] += recv_buffer[:len(chunks[to_recv])]
 
-    send_req.wait()     # Need to wait till sending is finished
+    for send_req in send_reqs:
+        send_req.wait()     # Need to wait till sending is finished
+    send_reqs = []
 
     # We now have result[r+1] on node with rank r
 
@@ -55,11 +61,12 @@ def ring_all_reduce(send):
     for i in range(size-1):
         to_send = (rank - i + 1) % size
         to_recv = (to_send - 1) % size
-        send_req = dist.isend(chunks[to_send], right)
+        send_reqs.append(dist.isend(chunks[to_send], right))
         dist.recv(recv_buffer, left)         # Receiving needs to be blocking
-        chunks[to_recv][:] = recv_buffer[:]  # [:] indicates deepcopy
+        chunks[to_recv][:] = recv_buffer[:len(chunks[to_recv])]  # [:] indicates deepcopy
 
-    send_req.wait()     # Need to wait till sending is finished
+    for send_req in send_reqs:
+        send_req.wait()     # Need to wait till sending is finished
 
     # Dividing result by the number of devices
     send /= float(size)
@@ -91,8 +98,7 @@ def forward_and_backprop(device, model, optimizer, data, target, loss_ret):
     for param in model.parameters():
         print(param.grad)
 
-
-def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
+def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue):
     model = Net().to(device)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 
@@ -137,6 +143,12 @@ def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
 
             optimizer.step()
 
+def gpu_process_wrapper(*args):
+    try:
+        gpu_process(*args)
+    except Exception as e:
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
 
 def main_process(rank, size, node_dev, total_dev):
     torch.manual_seed(1234)
@@ -150,7 +162,7 @@ def main_process(rank, size, node_dev, total_dev):
     buffer_model = Net()
 
     for args in zip(devices, train_sets, to_cpu_queues, from_cpu_queues):
-        p = mp.Process(target=gpu_prcess, args=args)
+        p = mp.Process(target=gpu_process_wrapper, args=args)
         p.start()
 
     for epoch in range(EPOCH_NUM):
@@ -193,6 +205,12 @@ def main_process(rank, size, node_dev, total_dev):
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', sum(epoch_losses) / num_batches / node_dev)
 
+def main_process_wrapper(*args):
+    try:
+        main_process(*args)
+    except Exception as e:
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
 
 def init_process(rank, size, node_dev, total_dev, master_addr, ifname, fn, backend='gloo'):
     """ Initialize the distributed environment. """
@@ -216,7 +234,7 @@ if __name__ == "__main__":
 
     torch.multiprocessing.set_start_method('spawn')
     p = mp.Process(target=init_process, args=(
-        rank, size, node_dev, total_dev, master_addr, ifname, main_process))
+        rank, size, node_dev, total_dev, master_addr, ifname, main_process_wrapper))
 
     try:
         p.start()
