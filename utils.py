@@ -1,7 +1,7 @@
 import enum
 import os
 
-VERBOSE_LEVEL = 3
+VERBOSE_LEVEL = 2
 
 
 class Level(enum.IntEnum):
@@ -13,6 +13,7 @@ class Level(enum.IntEnum):
 def print_d(str, level):
     if level <= VERBOSE_LEVEL:
         print(str)
+
 
 def eval_arg(arg):
     envargstr = "envarg://"

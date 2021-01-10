@@ -92,7 +92,7 @@ def forward_and_backprop(device, model, optimizer, data, target, loss_ret):
         print(param.grad)
 
 
-def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue, epoch_events):
+def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue):
     model = Net().to(device)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 
@@ -137,8 +137,6 @@ def gpu_prcess(device, train_set, to_cpu_queue, from_cpu_queue, epoch_events):
 
             optimizer.step()
 
-        epoch_events[epoch].wait()
-
 
 def main_process(rank, size, node_dev, total_dev):
     torch.manual_seed(1234)
@@ -149,11 +147,9 @@ def main_process(rank, size, node_dev, total_dev):
     to_cpu_queues = [mp.Queue() for _ in devices]
     from_cpu_queues = [mp.Queue() for _ in devices]
 
-    epoch_events = [mp.Event() for _ in range(EPOCH_NUM)]
-    zipped_epoch_events = [epoch_events for _ in devices]
     buffer_model = Net()
 
-    for args in zip(devices, train_sets, to_cpu_queues, from_cpu_queues, zipped_epoch_events):
+    for args in zip(devices, train_sets, to_cpu_queues, from_cpu_queues):
         p = mp.Process(target=gpu_prcess, args=args)
         p.start()
 
@@ -189,12 +185,11 @@ def main_process(rank, size, node_dev, total_dev):
 
             # Grab the loss from workers
             print_d(f"CPU: Receiving loss from GPUs", Level.DEBUG)
-            for queue, epoch_loss in zip(to_cpu_queues, epoch_losses):
+            for i, queue in enumerate(to_cpu_queues):
                 rec = queue.get()
-                epoch_loss += rec
+                epoch_losses[i] += rec
+                print(epoch_losses[i])
 
-        epoch_events[epoch].set()
-        print_d(f"CPU: Summing epoch loss {sum(epoch_losses)}", Level.INFO)
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', sum(epoch_losses) / num_batches / node_dev)
 
