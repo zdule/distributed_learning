@@ -10,7 +10,7 @@ import torch.random
 
 from network import Net
 from data import partition_dataset
-from utils import Level, print_d
+from utils import Level, print_d, eval_arg
 
 EPOCH_NUM = 2
 
@@ -30,6 +30,9 @@ def ring_all_reduce(send):
 
     rank = dist.get_rank()
     size = dist.get_world_size()
+    if size <= 1:
+        return
+
     chunks = torch.chunk(send, size)
     recv_buffer = chunks[0].clone()
 
@@ -191,16 +194,16 @@ def main_process(rank, size, node_dev, total_dev):
                 epoch_loss += rec
 
         epoch_events[epoch].set()
-        print_d(f"CPU: Summing epoch loss {sum(epoch_loss)}", Level.INFO)
+        print_d(f"CPU: Summing epoch loss {sum(epoch_losses)}", Level.INFO)
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', sum(epoch_losses) / num_batches / node_dev)
 
 
-def init_process(rank, size, node_dev, total_dev, fn, backend='gloo'):
+def init_process(rank, size, node_dev, total_dev, master_addr, ifname, fn, backend='gloo'):
     """ Initialize the distributed environment. """
-    os.environ['MASTER_ADDR'] = '192.168.0.193'
+    os.environ['MASTER_ADDR'] = master_addr
     os.environ['MASTER_PORT'] = '29501'
-    os.environ['GLOO_SOCKET_IFNAME'] = 'wlo1'
+    os.environ['GLOO_SOCKET_IFNAME'] = ifname
 
     dist.init_process_group(backend, rank=rank, world_size=size)
 
@@ -209,14 +212,16 @@ def init_process(rank, size, node_dev, total_dev, fn, backend='gloo'):
 
 
 if __name__ == "__main__":
-    size = int(sys.argv[1])
-    rank = int(sys.argv[2])
-    node_dev = int(sys.argv[3])
-    total_dev = int(sys.argv[4])
+    size = int(eval_arg(sys.argv[1]))
+    rank = int(eval_arg(sys.argv[2]))
+    node_dev = int(eval_arg(sys.argv[3]))
+    total_dev = int(eval_arg(sys.argv[4]))
+    master_addr = eval_arg(sys.argv[5])
+    ifname = eval_arg(sys.argv[6])
 
     torch.multiprocessing.set_start_method('spawn')
     p = mp.Process(target=init_process, args=(
-        rank, size, node_dev, total_dev, main_process))
+        rank, size, node_dev, total_dev, master_addr, ifname, main_process))
 
     try:
         p.start()

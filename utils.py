@@ -1,4 +1,5 @@
 import enum
+import os
 
 VERBOSE_LEVEL = 3
 
@@ -12,3 +13,9 @@ class Level(enum.IntEnum):
 def print_d(str, level):
     if level <= VERBOSE_LEVEL:
         print(str)
+
+def eval_arg(arg):
+    envargstr = "envarg://"
+    if arg.startswith(envargstr):
+        return os.environ[arg[len(envargstr):]]
+    return arg
