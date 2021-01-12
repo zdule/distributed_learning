@@ -8,8 +8,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.random
 
-from network import Net
-from data import partition_dataset
+from network import BasicNet, GoogLeNet
+from data import partition_mnist, partition_image_net
 from utils import Level, print_d, eval_arg
 import traceback
 
@@ -63,7 +63,8 @@ def ring_all_reduce(send):
         to_recv = (to_send - 1) % size
         send_reqs.append(dist.isend(chunks[to_send], right))
         dist.recv(recv_buffer, left)         # Receiving needs to be blocking
-        chunks[to_recv][:] = recv_buffer[:len(chunks[to_recv])]  # [:] indicates deepcopy
+        chunks[to_recv][:] = recv_buffer[:len(
+            chunks[to_recv])]  # [:] indicates deepcopy
 
     for send_req in send_reqs:
         send_req.wait()     # Need to wait till sending is finished
@@ -98,8 +99,9 @@ def forward_and_backprop(device, model, optimizer, data, target, loss_ret):
     for param in model.parameters():
         print(param.grad)
 
+
 def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue):
-    model = Net().to(device)
+    model = GoogLeNet().to(device)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 
     worker_loss = 0
@@ -143,6 +145,7 @@ def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue):
 
             optimizer.step()
 
+
 def gpu_process_wrapper(*args):
     try:
         gpu_process(*args)
@@ -150,16 +153,17 @@ def gpu_process_wrapper(*args):
         traceback.print_exc(file=sys.stdout)
         sys.stdout.flush()
 
+
 def main_process(rank, size, node_dev, total_dev):
     torch.manual_seed(1234)
-    train_sets, bsz = partition_dataset(node_dev, total_dev)
+    train_sets, bsz = partition_image_net(node_dev, total_dev)
     num_batches = len(train_sets[0])
 
     devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
     to_cpu_queues = [mp.Queue() for _ in devices]
     from_cpu_queues = [mp.Queue() for _ in devices]
 
-    buffer_model = Net()
+    buffer_model = GoogLeNet()
 
     for args in zip(devices, train_sets, to_cpu_queues, from_cpu_queues):
         p = mp.Process(target=gpu_process_wrapper, args=args)
@@ -205,12 +209,14 @@ def main_process(rank, size, node_dev, total_dev):
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', sum(epoch_losses) / num_batches / node_dev)
 
+
 def main_process_wrapper(*args):
     try:
         main_process(*args)
     except Exception as e:
         traceback.print_exc(file=sys.stdout)
         sys.stdout.flush()
+
 
 def init_process(rank, size, node_dev, total_dev, master_addr, ifname, fn, backend='gloo'):
     """ Initialize the distributed environment. """
