@@ -12,8 +12,11 @@ from network import BasicNet, GoogLeNet
 from data import partition_mnist, partition_image_net
 from utils import Level, print_d, eval_arg
 import traceback
+import threading
+import time
 
 EPOCH_NUM = 2
+sync_method = "fused"
 
 
 def built_in_allreduce(send):
@@ -96,8 +99,50 @@ def forward_and_backprop(device, model, optimizer, data, target, loss_ret):
     loss = F.nll_loss(output, target)
     loss_ret.value = loss.item()
     loss.backward()
+
+def fusion_grouping_gen(model, take_grads=True):
+    params = model.parameters()
+    finished = False
+    while not finished:
+        to_fuse = []
+        total_size = 0
+        while total_size < 40000:
+            nxt = next(params, None)
+            if nxt == None:
+                finished = True
+                break
+            if take_grads:
+                nxt = nxt.grad.data
+            to_fuse.append(nxt)
+            total_size += nxt.numel()
+        if len(to_fuse) > 0:
+            yield to_fuse
+
+def load_fused_params_from_cpu(from_cpu_queue, model, device):
+    for to_fuse in fusion_grouping_gen(model):
+        result = from_cpu_queue.get()
+        curr = 0
+        for t in to_fuse:
+            t.view(-1)[:] = result[curr:curr+t.numel()]
+            curr += t.numel()
+        del result
+
+def load_params_from_cpu(from_cpu_queue, model, device):
     for param in model.parameters():
-        print(param.grad)
+        result = from_cpu_queue.get()
+        result_dev = result.to(device)
+        del result
+        param.grad.data[:] = result_dev
+
+def fuse_to_cpu(tensors):
+    if len(tensors) == 0: return None
+    required_size = sum((t.numel() for t in tensors))
+    result = torch.empty(required_size, dtype=tensors[0].dtype)
+    curr = 0
+    for t in tensors:
+        result[curr:curr+t.numel()] = t.view(-1)[:]
+        curr += t.numel()
+    return result
 
 
 def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue):
@@ -125,16 +170,34 @@ def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue):
 
             # Share result to CPU and read back
             print_d("GPU: Communicating with CPU", Level.DEBUG)
-            for param in model.parameters():
-                print_d("GPU: Sending local grad", Level.DEBUG)
-                to_cpu_queue.put(param.grad.data)
+            if sync_method == "sync":
+                for param in model.parameters():
+                    print_d("GPU: Sending local grad", Level.DEBUG)
+                    to_cpu_queue.put(param.grad.data)
 
-                print_d("GPU: Receving global grad", Level.DEBUG)
-                result = from_cpu_queue.get()
-                result_dev = result.to(device)
-                del result
-
-                param.grad.data[:] = result_dev
+                    print_d("GPU: Receving global grad", Level.DEBUG)
+                    result = from_cpu_queue.get()
+                    result_dev = result.to(device)
+                    del result
+                    param.grad.data[:] = result_dev
+            elif sync_method == "async":
+                print("async")
+                t = threading.Thread(target=load_params_from_cpu, args=(from_cpu_queue, model, device))
+                t.start()
+                for param in model.parameters():
+                    print_d("GPU: Sending local grad", Level.DEBUG)
+                    to_cpu_queue.put(param.grad.data.to("cpu"))
+                t.join()
+            else:
+                print("fused")
+                t = threading.Thread(target=load_fused_params_from_cpu, args=(from_cpu_queue, model, device))
+                t.start()
+                params = model.parameters()
+                finished = False
+                for to_fuse in fusion_grouping_gen(model):
+                    fused = fuse_to_cpu(to_fuse)
+                    to_cpu_queue.put(fused)
+                t.join()
 
             # Send back loss for this batch (this also signals
             # that everything has been received)
@@ -159,8 +222,9 @@ def main_process(rank, size, node_dev, total_dev):
     train_sets, bsz = partition_image_net(node_dev, total_dev)
     num_batches = len(train_sets[0])
 
-    devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
-    to_cpu_queues = [mp.Queue() for _ in devices]
+    #devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
+    devices = [torch.device("cpu") for i in range(node_dev)]
+    to_cpu_queues = [mp.Queue(maxsize=50) for _ in devices]
     from_cpu_queues = [mp.Queue() for _ in devices]
 
     buffer_model = GoogLeNet()
@@ -173,6 +237,8 @@ def main_process(rank, size, node_dev, total_dev):
         epoch_losses = [0.0 for _ in devices]
         print_d(f"CPU: Starting epoch {epoch}", Level.INFO)
 
+        sum_t = 0
+        num_t = 0
         for b in range(num_batches):
 
             print_d(f"CPU: Starting batch {b}", Level.DEBUG)
@@ -182,29 +248,47 @@ def main_process(rank, size, node_dev, total_dev):
 
             # Get the local parameters and allreduce layer-by-layer
             print_d(f"CPU: Starting communication with GPUs", Level.DEBUG)
-            for param in buffer_model.parameters():
+            start_T = time.monotonic_ns()
+ 
+            print_d(f"CPU: Receiving local grad from GPUs", Level.DEBUG)
+            if sync_method == "sync" or sync_method == "async":
+                for param in buffer_model.parameters():
+                    for que in to_cpu_queues:
+                        received = que.get()
+                        received_cpu = received.to("cpu")
+                        del received
+                        param[:] += received_cpu[:]
+                    param[:] /= float(node_dev)
 
-                print_d(f"CPU: Receiving local grad from GPUs", Level.DEBUG)
-                for queue in to_cpu_queues:
-                    received = queue.get()
-                    received_cpu = received.to("cpu")
-                    del received
-                    param[:] += received_cpu[:]
-                param[:] /= float(node_dev)
+                    print_d(f"CPU: Performing allreduce", Level.DEBUG)
+                    ring_all_reduce(param)
+                    print_d(f"CPU: Sending global grad to GPUs", Level.DEBUG)
+                    for que in from_cpu_queues:
+                        que.put(param.detach())
+            else:
+                for to_fuse in fusion_grouping_gen(buffer_model, take_grads=False):
+                    print_d(f"CPU: Receiving local grad from GPUs", Level.DEBUG)
+                    param = torch.zeros(sum((t.numel() for t in to_fuse)), dtype = to_fuse[0].dtype)
+                    for que in to_cpu_queues:
+                        received = que.get()
+                        param[:] += received
+                    param[:] /= float(node_dev)
 
-                print_d(f"CPU: Performing allreduce", Level.DEBUG)
-                ring_all_reduce(param)
-
-                print_d(f"CPU: Sending global grad to GPUs", Level.DEBUG)
-                for queue in from_cpu_queues:
-                    queue.put(param.detach())
+                    print_d(f"CPU: Performing allreduce", Level.DEBUG)
+                    ring_all_reduce(param)
+                    print_d(f"CPU: Sending global grad to GPUs", Level.DEBUG)
+                    for que in from_cpu_queues:
+                        que.put(param.detach())
+            sum_t += time.monotonic_ns() - start_T
+            num_t += 1
 
             # Grab the loss from workers
             print_d(f"CPU: Receiving loss from GPUs", Level.DEBUG)
-            for i, queue in enumerate(to_cpu_queues):
-                rec = queue.get()
+            for i, que in enumerate(to_cpu_queues):
+                rec = que.get()
                 epoch_losses[i] += rec
                 print(epoch_losses[i])
+            print_d(f"Time: {sum_t/num_t}",Level.DEBUG)
 
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', sum(epoch_losses) / num_batches / node_dev)
