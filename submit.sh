@@ -44,7 +44,7 @@ total_gpus=$[${numtasks}*4]
 echo $total_gpus
 
 #! Full path to application executable: 
-application="python3 main.py"
+application="python3 src/main.py"
 
 #! Run options for the application:
 options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 4 $total_gpus $ip_addr ib0 imagenet"
