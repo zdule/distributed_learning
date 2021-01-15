@@ -234,9 +234,9 @@ def prime_model(model, sample, network_type):
     loss.backward()
     print_d("Done priming CPU model", Level.DEBUG)
 
-def main_process(rank, size, node_dev, total_dev, network_type):
+def main_process(rank, size, node_dev, total_dev, network_type, dataset_root):
     torch.manual_seed(1234)
-    train_sets, bsz = partition_dataset[network_type](node_dev, total_dev)
+    train_sets, bsz = partition_dataset[network_type](node_dev, total_dev, dataset_root)
     num_batches = len(train_sets[0])
 
     devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
@@ -317,7 +317,7 @@ def main_process_wrapper(*args):
         sys.stdout.flush()
 
 
-def init_process(rank, size, node_dev, total_dev, master_addr, ifname, network_type, fn, backend='gloo'):
+def init_process(rank, size, node_dev, total_dev, master_addr, ifname, network_type, dataset_root, fn, backend='gloo'):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = master_addr
     os.environ['MASTER_PORT'] = '29501'
@@ -326,7 +326,7 @@ def init_process(rank, size, node_dev, total_dev, master_addr, ifname, network_t
     dist.init_process_group(backend, rank=rank, world_size=size)
 
     print("Connection initialised")
-    fn(rank, size, node_dev, total_dev, network_type)
+    fn(rank, size, node_dev, total_dev, network_type, dataset_root)
 
 
 if __name__ == "__main__":
@@ -337,11 +337,14 @@ if __name__ == "__main__":
     master_addr = eval_arg(sys.argv[5])
     ifname = eval_arg(sys.argv[6])
     network_type = eval_arg(sys.argv[7])
-#dataset_root = eval_arg(sys.argv[8])
+    if len(sys.argv) < 9:
+        dataset_root = "../data"
+    else:
+        dataset_root = eval_arg(sys.argv[8])
 
     torch.multiprocessing.set_start_method('spawn')
     p = mp.Process(target=init_process, args=(
-        rank, size, node_dev, total_dev, master_addr, ifname, network_type, main_process_wrapper))
+        rank, size, node_dev, total_dev, master_addr, ifname, network_type, dataset_root, main_process_wrapper))
 
     try:
         p.start()

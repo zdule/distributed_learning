@@ -47,7 +47,7 @@ echo $total_gpus
 application="python3 src/main.py"
 
 #! Run options for the application:
-options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 4 $total_gpus $ip_addr ib0 imagenet"
+options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 4 $total_gpus $ip_addr ib0 imagenet /rds/user/dz308/hpc-work"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory

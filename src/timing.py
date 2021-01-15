@@ -14,10 +14,10 @@ def start_timing_experiment(exp_n):
     experiment_name = exp_n
 
 def start_timer(name):
-    starts[name] = time.monotonic_ns()
+    starts[name] = time.time()*1000
 
 def end_timer(name):
-    sums[name] = time.monotonic_ns() - starts[name]
+    sums[name] = time.time()*1000 - starts[name]
     if name not in counts:
         counts[name] = 1
     else:

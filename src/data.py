@@ -57,12 +57,12 @@ def _partition_helper(node_dev, total_dev, dataset):
     return train_sets, bsz
 
 
-def partition_mnist(node_dev, total_dev):
+def partition_mnist(node_dev, total_dev, dataset):
     """ 
     Loads and partitions the MNIST dataset
     """
 
-    dataset = datasets.MNIST('../data/mnist', train=True, download=True,
+    dataset = datasets.MNIST(dataset + '/mnist', train=True, download=True,
                              transform=transforms.Compose([
                                  transforms.ToTensor(),
                                  transforms.Normalize((0.1307,), (0.3081,))
@@ -71,13 +71,13 @@ def partition_mnist(node_dev, total_dev):
     return _partition_helper(node_dev, total_dev, dataset)
 
 
-def partition_image_net(node_dev, total_dev):
+def partition_image_net(node_dev, total_dev, dataset):
     """ 
     Loads and partitions the MNIST dataset
     """
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
-    dataset = datasets.ImageNet('../data/ImageNet',
+    dataset = datasets.ImageNet(dataset + '/ImageNet',
                                 download=[
                                     'airplane', 'automobile', 'bird', 'cat',
                                     'deer', 'dog', 'frog', 'horse', 'ship', 'truck'],
@@ -90,13 +90,13 @@ def partition_image_net(node_dev, total_dev):
 
     return _partition_helper(node_dev, total_dev, dataset)
 
-def partition_image_folder(node_dev, total_dev):
+def partition_image_folder(node_dev, total_dev, dataset_root):
     """ 
     Loads and partitions the ImageFolder dataset
     """
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
-    dataset = datasets.ImageFolder('data/ImageFolder',
+    dataset = datasets.ImageFolder(dataset_root + '/ImageFolder',
                                 transform=transforms.Compose([
                                     transforms.Resize(256),
                                     transforms.CenterCrop(224),
