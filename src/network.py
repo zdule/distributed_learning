@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from utils import print_d, Level
 
 
 class BasicNet(nn.Module):
@@ -30,4 +31,7 @@ class BasicNet(nn.Module):
 
 
 def GoogLeNet():
-    return torch.hub.load('pytorch/vision:v0.6.0', 'googlenet', pretrained=False)
+    print_d("Loading model", Level.INFO)
+    model =  torch.hub.load('pytorch/vision:v0.6.0', 'googlenet', pretrained=False)
+    print_d("Model loaded", Level.INFO)
+    return model

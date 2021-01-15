@@ -9,15 +9,19 @@ import torch.optim as optim
 import torch.random
 
 from network import BasicNet, GoogLeNet
-from data import partition_mnist, partition_image_net
+from data import partition_mnist, partition_image_net, partition_image_folder
 from utils import Level, print_d, eval_arg
 import traceback
 import threading
-import time
+
+from timing import start_timing_experiment, start_timer, end_timer, writeout_timer
 
 EPOCH_NUM = 2
 sync_method = "fused"
 
+create_network = { "mnist" : BasicNet, "imagenet" : GoogLeNet }
+partition_dataset = { "mnist" : partition_mnist, "imagenet" : partition_image_folder }
+process_output = { "mnist" : lambda x : x, "imagenet" : lambda x : F.log_softmax(x[0], dim=1) }
 
 def built_in_allreduce(send):
     dist.all_reduce(send, op=dist.reduce_op.SUM)
@@ -88,19 +92,7 @@ def move_gradients_to_gpu_and_optimise(model, grads, optimiser):
         param.grad.data[:] = grads[i][:]
     optimiser.step()
 
-
-def forward_and_backprop(device, model, optimizer, data, target, loss_ret):
-    # Moving training data to cuda device
-    data, target = data.to(device), target.to(device)
-
-    # Feed forward and backprop
-    optimizer.zero_grad()
-    output = model(data)
-    loss = F.nll_loss(output, target)
-    loss_ret.value = loss.item()
-    loss.backward()
-
-def fusion_grouping_gen(model, take_grads=True):
+def fusion_grouping_gen(model):
     params = model.parameters()
     finished = False
     while not finished:
@@ -111,8 +103,9 @@ def fusion_grouping_gen(model, take_grads=True):
             if nxt == None:
                 finished = True
                 break
-            if take_grads:
-                nxt = nxt.grad.data
+            if nxt.grad == None:
+                continue
+            nxt = nxt.grad.data
             to_fuse.append(nxt)
             total_size += nxt.numel()
         if len(to_fuse) > 0:
@@ -145,31 +138,42 @@ def fuse_to_cpu(tensors):
     return result
 
 
-def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue):
-    model = GoogLeNet().to(device)
+def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue, network_type):
+    model = create_network[network_type]().to(device)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 
     worker_loss = 0
 
+    start_timing_experiment("Run")
     for epoch in range(EPOCH_NUM):
         print_d(f"GPU: Starting epoch {epoch}", Level.INFO)
 
+        itr = 0
         for data, target in train_set:
+            itr += 1
+            if itr > 3: break
 
             print_d("GPU: Moving training data to GPU", Level.DEBUG)
+            start_timer("data2gpu")
             data, target = data.to(device), target.to(device)
+            end_timer("data2gpu")
             optimizer.zero_grad()
 
             # Feed forward
             print_d("GPU: Perfroming feed forward and backprop", Level.DEBUG)
+            start_timer("compute")
             output = model(data)
-            loss = F.nll_loss(output, target)
+            loss = F.nll_loss(process_output[network_type](output), target)
+            end_timer("compute")
 
+            start_timer("backprop")
             # Backpropagation
             loss.backward()
+            end_timer("backprop")
 
             # Share result to CPU and read back
             print_d("GPU: Communicating with CPU", Level.DEBUG)
+            start_timer("sync")
             if sync_method == "sync":
                 for param in model.parameters():
                     print_d("GPU: Sending local grad", Level.DEBUG)
@@ -205,8 +209,12 @@ def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue):
             print_d("GPU: Sending loss to CPU", Level.DEBUG)
             worker_loss = loss.item()
             to_cpu_queue.put(worker_loss)
-
+            end_timer("sync")
+ 
+            start_timer("optimizer_step")
             optimizer.step()
+            end_timer("optimizer_step")
+    writeout_timer("times.csv")
 
 
 def gpu_process_wrapper(*args):
@@ -216,10 +224,19 @@ def gpu_process_wrapper(*args):
         traceback.print_exc(file=sys.stdout)
         sys.stdout.flush()
 
+def prime_model(model, sample, network_type):
+    print_d("Priming CPU model", Level.DEBUG)
+    data, target = sample
+    print(sample)
+    print(target)
+    output = model(data)
+    loss = F.nll_loss(process_output[network_type](output), target)
+    loss.backward()
+    print_d("Done priming CPU model", Level.DEBUG)
 
-def main_process(rank, size, node_dev, total_dev):
+def main_process(rank, size, node_dev, total_dev, network_type):
     torch.manual_seed(1234)
-    train_sets, bsz = partition_image_net(node_dev, total_dev)
+    train_sets, bsz = partition_dataset[network_type](node_dev, total_dev)
     num_batches = len(train_sets[0])
 
     #devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
@@ -227,9 +244,10 @@ def main_process(rank, size, node_dev, total_dev):
     to_cpu_queues = [mp.Queue(maxsize=50) for _ in devices]
     from_cpu_queues = [mp.Queue() for _ in devices]
 
-    buffer_model = GoogLeNet()
+    buffer_model = create_network[network_type]()
+    prime_model(buffer_model, train_sets[0].__iter__().next(), network_type)
 
-    for args in zip(devices, train_sets, to_cpu_queues, from_cpu_queues):
+    for args in zip(devices, train_sets, to_cpu_queues, from_cpu_queues, [network_type] * node_dev):
         p = mp.Process(target=gpu_process_wrapper, args=args)
         p.start()
 
@@ -237,18 +255,18 @@ def main_process(rank, size, node_dev, total_dev):
         epoch_losses = [0.0 for _ in devices]
         print_d(f"CPU: Starting epoch {epoch}", Level.INFO)
 
-        sum_t = 0
-        num_t = 0
+        itr = 0
         for b in range(num_batches):
+            itr += 1
+            if itr > 3: break
 
             print_d(f"CPU: Starting batch {b}", Level.DEBUG)
             # Reset the collected parameters
             for param in buffer_model.parameters():
+                if param.grad != None:
+                    param.grad.data[:] = 0
                 param[:] = 0
 
-            # Get the local parameters and allreduce layer-by-layer
-            print_d(f"CPU: Starting communication with GPUs", Level.DEBUG)
-            start_T = time.monotonic_ns()
  
             print_d(f"CPU: Receiving local grad from GPUs", Level.DEBUG)
             if sync_method == "sync" or sync_method == "async":
@@ -266,7 +284,7 @@ def main_process(rank, size, node_dev, total_dev):
                     for que in from_cpu_queues:
                         que.put(param.detach())
             else:
-                for to_fuse in fusion_grouping_gen(buffer_model, take_grads=False):
+                for to_fuse in fusion_grouping_gen(buffer_model):
                     print_d(f"CPU: Receiving local grad from GPUs", Level.DEBUG)
                     param = torch.zeros(sum((t.numel() for t in to_fuse)), dtype = to_fuse[0].dtype)
                     for que in to_cpu_queues:
@@ -279,8 +297,6 @@ def main_process(rank, size, node_dev, total_dev):
                     print_d(f"CPU: Sending global grad to GPUs", Level.DEBUG)
                     for que in from_cpu_queues:
                         que.put(param.detach())
-            sum_t += time.monotonic_ns() - start_T
-            num_t += 1
 
             # Grab the loss from workers
             print_d(f"CPU: Receiving loss from GPUs", Level.DEBUG)
@@ -288,7 +304,6 @@ def main_process(rank, size, node_dev, total_dev):
                 rec = que.get()
                 epoch_losses[i] += rec
                 print(epoch_losses[i])
-            print_d(f"Time: {sum_t/num_t}",Level.DEBUG)
 
         print('Rank ', dist.get_rank(), ', epoch ',
               epoch, ': ', sum(epoch_losses) / num_batches / node_dev)
@@ -302,7 +317,7 @@ def main_process_wrapper(*args):
         sys.stdout.flush()
 
 
-def init_process(rank, size, node_dev, total_dev, master_addr, ifname, fn, backend='gloo'):
+def init_process(rank, size, node_dev, total_dev, master_addr, ifname, network_type, fn, backend='gloo'):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = master_addr
     os.environ['MASTER_PORT'] = '29501'
@@ -311,7 +326,7 @@ def init_process(rank, size, node_dev, total_dev, master_addr, ifname, fn, backe
     dist.init_process_group(backend, rank=rank, world_size=size)
 
     print("Connection initialised")
-    fn(rank, size, node_dev, total_dev)
+    fn(rank, size, node_dev, total_dev, network_type)
 
 
 if __name__ == "__main__":
@@ -321,10 +336,12 @@ if __name__ == "__main__":
     total_dev = int(eval_arg(sys.argv[4]))
     master_addr = eval_arg(sys.argv[5])
     ifname = eval_arg(sys.argv[6])
+    network_type = eval_arg(sys.argv[7])
+#dataset_root = eval_arg(sys.argv[8])
 
     torch.multiprocessing.set_start_method('spawn')
     p = mp.Process(target=init_process, args=(
-        rank, size, node_dev, total_dev, master_addr, ifname, main_process_wrapper))
+        rank, size, node_dev, total_dev, master_addr, ifname, network_type, main_process_wrapper))
 
     try:
         p.start()

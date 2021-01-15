@@ -89,3 +89,19 @@ def partition_image_net(node_dev, total_dev):
                                 ]))
 
     return _partition_helper(node_dev, total_dev, dataset)
+
+def partition_image_folder(node_dev, total_dev):
+    """ 
+    Loads and partitions the ImageFolder dataset
+    """
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+    dataset = datasets.ImageFolder('data/ImageFolder',
+                                transform=transforms.Compose([
+                                    transforms.Resize(256),
+                                    transforms.CenterCrop(224),
+                                    transforms.ToTensor(),
+                                    normalize
+                                ]))
+
+    return _partition_helper(node_dev, total_dev, dataset)
