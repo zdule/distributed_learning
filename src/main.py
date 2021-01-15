@@ -239,8 +239,8 @@ def main_process(rank, size, node_dev, total_dev, network_type):
     train_sets, bsz = partition_dataset[network_type](node_dev, total_dev)
     num_batches = len(train_sets[0])
 
-    #devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
-    devices = [torch.device("cpu") for i in range(node_dev)]
+    devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
+    #devices = [torch.device("cpu") for i in range(node_dev)]
     to_cpu_queues = [mp.Queue(maxsize=50) for _ in devices]
     from_cpu_queues = [mp.Queue() for _ in devices]
 
