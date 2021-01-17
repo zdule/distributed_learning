@@ -56,6 +56,20 @@ def _partition_helper(node_dev, total_dev, dataset):
                   for partition in partitions]
     return train_sets, bsz
 
+def _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset):
+    """ 
+    Get one partition from a given dataset.
+    """
+
+    bsz = PER_WORKER_BATCH_SIZE
+    partition_sizes = [1.0 / total_dev for _ in range(total_dev)]
+    partitioner = DataPartitioner(dataset, partition_sizes)
+    partition = partitioner.use(node_id * node_dev + worker_id)
+    train_set = torch.utils.data.DataLoader(partition,
+                                              batch_size=int(bsz),
+                                              shuffle=True)
+    return train_set
+
 
 def partition_mnist(node_dev, total_dev, dataset):
     """ 
@@ -70,29 +84,22 @@ def partition_mnist(node_dev, total_dev, dataset):
 
     return _partition_helper(node_dev, total_dev, dataset)
 
-
-def partition_image_net(node_dev, total_dev, dataset):
+def get_partition_mnist(node_id, worker_id, node_dev, total_dev, dataset):
     """ 
     Loads and partitions the MNIST dataset
     """
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-    dataset = datasets.ImageNet(dataset + '/ImageNet',
-                                download=[
-                                    'airplane', 'automobile', 'bird', 'cat',
-                                    'deer', 'dog', 'frog', 'horse', 'ship', 'truck'],
-                                transform=transforms.Compose([
-                                    transforms.Resize(256),
-                                    transforms.CenterCrop(224),
-                                    transforms.ToTensor(),
-                                    normalize
-                                ]))
 
-    return _partition_helper(node_dev, total_dev, dataset)
+    dataset = datasets.MNIST(dataset + '/mnist', train=True, download=True,
+                             transform=transforms.Compose([
+                                 transforms.ToTensor(),
+                                 transforms.Normalize((0.1307,), (0.3081,))
+                             ]))
+
+    return _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset)
 
 def partition_image_folder(node_dev, total_dev, dataset_root):
     """ 
-    Loads and partitions the ImageFolder dataset
+    Loads one partition of the ImageFolder dataset
     """
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
@@ -105,3 +112,19 @@ def partition_image_folder(node_dev, total_dev, dataset_root):
                                 ]))
 
     return _partition_helper(node_dev, total_dev, dataset)
+
+def get_partition_image_folder(node_id, worker_id, node_dev, total_dev, dataset_root):
+    """ 
+    Loads one partition of the ImageFolder dataset
+    """
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+    dataset = datasets.ImageFolder(dataset_root + '/ImageFolder',
+                                transform=transforms.Compose([
+                                    transforms.Resize(256),
+                                    transforms.CenterCrop(224),
+                                    transforms.ToTensor(),
+                                    normalize
+                                ]))
+
+    return _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset)

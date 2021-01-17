@@ -30,8 +30,22 @@ class BasicNet(nn.Module):
         return output
 
 
-def GoogLeNet():
-    print_d("Loading model", Level.INFO)
-    model =  torch.hub.load('pytorch/vision:v0.6.0', 'googlenet', pretrained=False)
-    print_d("Model loaded", Level.INFO)
-    return model
+class GoogLeNet:
+    def __init__(self):
+        print_d("Loading model", Level.INFO)
+        self.model =  torch.hub.load('pytorch/vision:v0.6.0', 'googlenet', pretrained=False, init_weights=False)
+        print_d("Model loaded", Level.INFO)
+
+    def forward(self, x):
+        output = self.model.forward(x)
+        return F.log_softmax(output[0], dim=1)
+
+    def to(self, device):
+        self.model = self.model.to(device)
+        return self
+
+    def __call__(self, x):
+        return self.forward(x)
+
+    def __getattr__(self, attr):
+        return getattr(self.model,attr)

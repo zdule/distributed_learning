@@ -16,7 +16,7 @@ import threading
 
 from timing import start_timing_experiment, start_timer, end_timer, writeout_timer
 
-EPOCH_NUM = 2
+EPOCH_NUM = 1
 sync_method = "fused"
 
 create_network = { "mnist" : BasicNet, "imagenet" : GoogLeNet }
@@ -79,7 +79,7 @@ def ring_all_reduce(send):
     # Dividing result by the number of devices
     send /= float(size)
 
-
+"""
 def move_gradients_to_cpu(model):
     for param in model.parameters():
         print(param.grad)
@@ -91,8 +91,9 @@ def move_gradients_to_gpu_and_optimise(model, grads, optimiser):
     for i, param in enumerate(model.parameters()):
         param.grad.data[:] = grads[i][:]
     optimiser.step()
+"""
 
-def fusion_grouping_gen(model):
+def fusion_grouping_gen(model, do_print=False):
     params = model.parameters()
     finished = False
     while not finished:
@@ -103,7 +104,7 @@ def fusion_grouping_gen(model):
             if nxt == None:
                 finished = True
                 break
-            if nxt.grad == None:
+            if nxt.requires_grad == False or nxt.grad == None:
                 continue
             nxt = nxt.grad.data
             to_fuse.append(nxt)
@@ -122,6 +123,8 @@ def load_fused_params_from_cpu(from_cpu_queue, model, device):
 
 def load_params_from_cpu(from_cpu_queue, model, device):
     for param in model.parameters():
+        if param.requires_grad == False or param.grad == None:
+            continue
         result = from_cpu_queue.get()
         result_dev = result.to(device)
         del result
@@ -150,8 +153,9 @@ def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue, network_type):
 
         itr = 0
         for data, target in train_set:
+            sys.stderr.flush()
             itr += 1
-            if itr > 3: break
+            if itr > 2: break
 
             print_d("GPU: Moving training data to GPU", Level.DEBUG)
             start_timer("data2gpu")
@@ -176,6 +180,8 @@ def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue, network_type):
             start_timer("sync")
             if sync_method == "sync":
                 for param in model.parameters():
+                    if param.requires_grad == False or param.grad == None:
+                        continue
                     print_d("GPU: Sending local grad", Level.DEBUG)
                     to_cpu_queue.put(param.grad.data)
 
@@ -189,6 +195,8 @@ def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue, network_type):
                 t = threading.Thread(target=load_params_from_cpu, args=(from_cpu_queue, model, device))
                 t.start()
                 for param in model.parameters():
+                    if param.requires_grad == False or param.grad == None:
+                        continue
                     print_d("GPU: Sending local grad", Level.DEBUG)
                     to_cpu_queue.put(param.grad.data.to("cpu"))
                 t.join()
@@ -227,8 +235,6 @@ def gpu_process_wrapper(*args):
 def prime_model(model, sample, network_type):
     print_d("Priming CPU model", Level.DEBUG)
     data, target = sample
-    print(sample)
-    print(target)
     output = model(data)
     loss = F.nll_loss(process_output[network_type](output), target)
     loss.backward()
@@ -239,8 +245,8 @@ def main_process(rank, size, node_dev, total_dev, network_type, dataset_root):
     train_sets, bsz = partition_dataset[network_type](node_dev, total_dev, dataset_root)
     num_batches = len(train_sets[0])
 
-    devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
-    #devices = [torch.device("cpu") for i in range(node_dev)]
+    #devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
+    devices = [torch.device("cpu") for i in range(node_dev)]
     to_cpu_queues = [mp.Queue(maxsize=50) for _ in devices]
     from_cpu_queues = [mp.Queue() for _ in devices]
 
@@ -258,18 +264,20 @@ def main_process(rank, size, node_dev, total_dev, network_type, dataset_root):
         itr = 0
         for b in range(num_batches):
             itr += 1
-            if itr > 3: break
+            if itr > 2: break
 
             print_d(f"CPU: Starting batch {b}", Level.DEBUG)
             # Reset the collected parameters
             for param in buffer_model.parameters():
-                if param.grad != None:
-                    param.grad.data[:] = 0
-                param[:] = 0
+                if param.requires_grad == False or param.grad == None:
+                    continue
+                param.grad.data[:] = 0
+                param.data[:] = 0
 
  
             print_d(f"CPU: Receiving local grad from GPUs", Level.DEBUG)
             if sync_method == "sync" or sync_method == "async":
+                print_d("Not Fused", Level.DEBUG)
                 for param in buffer_model.parameters():
                     for que in to_cpu_queues:
                         received = que.get()
@@ -284,13 +292,14 @@ def main_process(rank, size, node_dev, total_dev, network_type, dataset_root):
                     for que in from_cpu_queues:
                         que.put(param.detach())
             else:
-                for to_fuse in fusion_grouping_gen(buffer_model):
+                for to_fuse in fusion_grouping_gen(buffer_model, do_print=True):
                     print_d(f"CPU: Receiving local grad from GPUs", Level.DEBUG)
                     param = torch.zeros(sum((t.numel() for t in to_fuse)), dtype = to_fuse[0].dtype)
                     for que in to_cpu_queues:
                         received = que.get()
                         param[:] += received
                     param[:] /= float(node_dev)
+                    print_d(f"Getting tensor {param.numel()}", Level.INFO)
 
                     print_d(f"CPU: Performing allreduce", Level.DEBUG)
                     ring_all_reduce(param)

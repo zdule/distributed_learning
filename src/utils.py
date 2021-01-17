@@ -2,7 +2,7 @@ import enum
 import os
 import sys
 
-VERBOSE_LEVEL = 2
+VERBOSE_LEVEL = 3
 
 
 class Level(enum.IntEnum):
