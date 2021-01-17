@@ -9,7 +9,7 @@ import torch.optim as optim
 import torch.random
 
 from network import BasicNet, GoogLeNet
-from data import partition_mnist, partition_image_net, partition_image_folder
+from data import partition_mnist, partition_image_folder
 from utils import Level, print_d, eval_arg
 import traceback
 import threading
@@ -21,7 +21,6 @@ sync_method = "fused"
 
 create_network = { "mnist" : BasicNet, "imagenet" : GoogLeNet }
 partition_dataset = { "mnist" : partition_mnist, "imagenet" : partition_image_folder }
-process_output = { "mnist" : lambda x : x, "imagenet" : lambda x : F.log_softmax(x[0], dim=1) }
 
 def built_in_allreduce(send):
     dist.all_reduce(send, op=dist.reduce_op.SUM)
@@ -167,7 +166,7 @@ def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue, network_type):
             print_d("GPU: Perfroming feed forward and backprop", Level.DEBUG)
             start_timer("compute")
             output = model(data)
-            loss = F.nll_loss(process_output[network_type](output), target)
+            loss = F.nll_loss(output, target)
             end_timer("compute")
 
             start_timer("backprop")
@@ -236,7 +235,7 @@ def prime_model(model, sample, network_type):
     print_d("Priming CPU model", Level.DEBUG)
     data, target = sample
     output = model(data)
-    loss = F.nll_loss(process_output[network_type](output), target)
+    loss = F.nll_loss(output, target)
     loss.backward()
     print_d("Done priming CPU model", Level.DEBUG)
 
