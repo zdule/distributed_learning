@@ -3,7 +3,6 @@ import argparse
 
 from network import BasicNet, GoogLeNet
 from data import get_partition_mnist, get_partition_image_folder
-from ourdist import OurDist
 
 create_network = { "mnist" : BasicNet, "imagenet" : GoogLeNet}
 get_partition_dataset = { "mnist" : get_partition_mnist, "imagenet" : get_partition_image_folder }
@@ -36,7 +35,6 @@ def parse_args():
 
     config.create_network = create_network[config.model_type]
     config.get_partition_dataset = get_partition_dataset[config.model_type]
-    config.distribute_model = OurDist
 
     config.epoch_count = 1
     config.limit_batches = 3

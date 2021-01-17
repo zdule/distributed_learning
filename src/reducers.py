@@ -1,3 +1,4 @@
+import torch
 import torch.multiprocessing as mp
 
 
@@ -26,7 +27,9 @@ class NodeAggregateReducer:
         self.to_cpu_queue.put(buff)
 
     def get(self):
-        return self.from_cpu_queue.get()
+        buff =  self.from_cpu_queue.get()
+        return buff
+
 
     def cleanup(self):
         if self.should_cleanup:
@@ -35,6 +38,7 @@ class NodeAggregateReducer:
 class NodeAgreggateReducerCPU:
     def __init__(self, reduce_fn, ndevs):
         self.reduce_fn = reduce_fn
+        self.ndevs = ndevs
         self.to_cpu_queues = [mp.Queue() for _ in range(ndevs)]
         self.from_cpu_queues = [mp.Queue() for _ in range(ndevs)]
         self.reducers = [NodeAggregateReducer(to_cpu, from_cpu, i==0) for (i, (to_cpu, from_cpu)) 
@@ -48,9 +52,11 @@ class NodeAgreggateReducerCPU:
                 if buff == None:
                     return
                 if agg == None:
-                    agg = buff
+                    agg = buff.detach().clone()
                 else:
-                    agg[:] += buff
-            self.reduce_fn(agg)
+                    agg[:len(buff)] += buff
+            agg /= float(self.ndevs)
+            self.reduce_fn(agg[:len(buff)])
             for que in self.from_cpu_queues:
-                que.put(agg)
+                que.put(agg[:len(buff)])
+            del agg

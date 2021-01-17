@@ -44,6 +44,9 @@ class GoogLeNet:
         self.model = self.model.to(device)
         return self
 
+    def parameters(self):
+        return self.model.parameters()
+
     def __call__(self, x):
         return self.forward(x)
 

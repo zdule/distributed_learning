@@ -20,22 +20,26 @@ class Group:
         total_size = sum((t.numel() for t in tensors))
         self.grad_buffer = torch.empty(total_size, dtype=tensors[0].dtype)
 
-        self.hooks = []
-        for t in tensors:
-            self.hooks.append(t.register_hook(get_hook(self)))
+        if get_hook != None:
+            self.hooks = []
+            for t in tensors:
+                self.hooks.append(t.register_hook(get_hook(self)))
 
-    def fuse_to_cpu(self):
+    def fuse(self, wait_none=True):
         curr = 0
         for t in self.tensors:
-            while t.grad == None:
-                pass
-            self.grad_buffer[curr:curr+t.numel()] = t.grad.view(-1)[:]
+            if wait_none:
+                while t.grad == None:
+                    pass
+            if t.grad != None:
+                self.grad_buffer[curr:curr+t.numel()] = t.grad.view(-1)[:]
             curr += t.numel()
 
     def unfuse(self, tensor):
         curr = 0
         for t in self.tensors:
-            t.grad.view(-1)[:] = tensor[curr:curr+t.numel()]
+            if t.grad != None:
+                t.grad.view(-1)[:] = tensor[curr:curr+t.numel()]
             curr += t.numel()
     
     def add_grad(self):
@@ -47,7 +51,7 @@ class Group:
         return False
 
 class OurDist:
-    def _fusion_grouping_gen(model, grouping_size=0):
+    def _fusion_grouping_gen(model, grouping_size=32000000):
         params = reversed(list(model.parameters()))
         to_fuse = []
         running_size = 0
@@ -105,7 +109,7 @@ class OurDist:
 
                 for group in self.groups:
                     group.event.wait()
-                    group.fuse_to_cpu()
+                    group.fuse()
                     self.reducer.put(group.grad_buffer)
         except Exception as e:
             traceback.print_exc(file=sys.stdout)
@@ -120,9 +124,8 @@ class OurDist:
 
                 if self.shutting_down: return
 
-                for i,group in enumerate(self.groups):
-                    group.grad_buffer = self.reducer.get()
-                    group.unfuse(group.grad_buffer)
+                for group in self.groups:
+                    group.unfuse(self.reducer.get())
                 self.done_processing_event.set()
         except Exception as e:
             traceback.print_exc(file=sys.stdout)
@@ -173,3 +176,51 @@ class OurDist:
 
     def __getattr__(self, attr):
         return getattr(self.model,attr)
+
+class SeqMergeDist:
+    def __init__(self, model, reducer):
+        self.model = model
+        self.reducer = reducer
+
+        self.groups = [Group(i, tensors, None) for i, tensors in enumerate(OurDist._fusion_grouping_gen(self.model))]
+
+    def cleanup(self):
+        pass
+
+    def sync_gradients(self):
+        for group in self.groups:
+            group.fuse(wait_none=False)
+            self.reducer.put(group.grad_buffer)
+            group.unfuse(self.reducer.get())
+
+    def forward(self, data):
+        return self.model.forward(data)
+
+    def __call__(self, data):
+        return self.model.forward(data)
+
+    def __getattr__(self, attr):
+        return getattr(self.model,attr)
+
+class SeqDist:
+    def __init__(self, model, reducer):
+        self.model = model
+        self.reducer = reducer
+
+    def cleanup(self):
+        pass
+
+    def sync_gradients(self):
+        for param in self.model.parameters():
+            self.reducer.put(param.grad.view(-1))
+            param.grad.view(-1)[:] = self.reducer.get()
+
+    def forward(self, data):
+        return self.model.forward(data)
+
+    def __call__(self, data):
+        return self.model.forward(data)
+
+    def __getattr__(self, attr):
+        return getattr(self.model,attr)
+    
