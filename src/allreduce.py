@@ -124,12 +124,18 @@ def ring_allreduce_gpu(send, groups):
     for i in range(size - 1):
         to_send = (rank-i) % size
         to_recv = (to_send - 1) % size
-        req = dist.broadcast(chunks[to_send], rank, group=right_group, async_op=True)
-        #req = dist.isend(chunks[to_send], right)
-        send_reqs.append(req)
-        req2 = dist.broadcast(recv_buffer[:len(chunks[to_recv])], left, group=left_group, async_op=True)
-        #dist.recv(recv_buffer, left)        # Receiving needs to be blocking
-        req2.wait()
+        if rank != size -1:
+            req = dist.broadcast(chunks[to_send], rank, group=right_group, async_op=True)
+            send_reqs.append(req)
+
+            req2 = dist.broadcast(recv_buffer[:len(chunks[to_recv])], left, group=left_group, async_op=True)
+            req2.wait()
+        else:
+            req2 = dist.broadcast(recv_buffer[:len(chunks[to_recv])], left, group=left_group, async_op=True)
+            req2.wait()
+            req = dist.broadcast(chunks[to_send], rank, group=right_group, async_op=True)
+            send_reqs.append(req)
+            
         chunks[to_recv][:] += recv_buffer[:len(chunks[to_recv])]
 
     print_d("Allreduce wait sends", Level.DEBUG)
@@ -144,14 +150,17 @@ def ring_allreduce_gpu(send, groups):
     for i in range(size-1):
         to_send = (rank - i + 1) % size
         to_recv = (to_send - 1) % size
-        req = dist.broadcast(chunks[to_send], rank, group=right_group, async_op=True)
-        #req = dist.isend(chunks[to_send], right)
-        send_reqs.append(req)
-        req2 = dist.broadcast(recv_buffer[:len(chunks[to_recv])], left, group=left_group, async_op=True)
-        #dist.recv(recv_buffer, left)        # Receiving needs to be blocking
-        req2.wait()
-        chunks[to_recv][:] = recv_buffer[:len(
-            chunks[to_recv])]  # [:] indicates deepcopy
+        if rank != size -1:
+            req = dist.broadcast(chunks[to_send], rank, group=right_group, async_op=True)
+            send_reqs.append(req)
+            req2 = dist.broadcast(recv_buffer[:len(chunks[to_recv])], left, group=left_group, async_op=True)
+            req2.wait()
+        else:
+            req2 = dist.broadcast(recv_buffer[:len(chunks[to_recv])], left, group=left_group, async_op=True)
+            req2.wait()
+            req = dist.broadcast(chunks[to_send], rank, group=right_group, async_op=True)
+            send_reqs.append(req)
+        chunks[to_recv][:] = recv_buffer[:len(chunks[to_recv])]  # [:] indicates deepcopy
     
     print_d("Allreduce wait send 2", Level.DEBUG)
     for send_req in send_reqs:
