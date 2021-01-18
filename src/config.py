@@ -31,16 +31,19 @@ def parse_args():
                         help='unique string used for results folder name')
     parser.add_argument('--experiment', dest='experiment', type=str, default="main_ourdist",
                         help='which experiment function to run')
+    parser.add_argument('--limit_batches', dest='limit_batches', type=int, default=3,
+                        help='which experiment function to run')
+    parser.add_argument('--backend', dest='backend', type=str, default="gloo",
+                        help='which experiment function to run')
+
     config = parser.parse_args()
     config.size = int(eval_arg(config.size))
     config.rank = int(eval_arg(config.rank))
-    config.backend = "gloo"
 
     config.create_network = create_network[config.model_type]
     config.get_partition_dataset = get_partition_dataset[config.model_type]
 
-    config.epoch_count = 1
-    config.limit_batches = 3
+    config.epoch_count = 100
     config.grouping_size = 25*1024*1024
 
     if config.use_gpu == 1:

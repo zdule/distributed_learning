@@ -1,5 +1,6 @@
 import torch
 import torch.multiprocessing as mp
+from queue import Queue
 
 
 class ReduceImmediatelly:

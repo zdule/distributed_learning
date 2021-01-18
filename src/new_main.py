@@ -19,7 +19,7 @@ from utils import Level, print_d, eval_arg
 from timing import end_timing_experiment, start_timer, end_timer, writeout_timer
 import time
 from allreduce import built_in_allreduce, ring_allreduce, ring_allreduce_gpu, central_allreduce
-from reducers import NodeAgreggateReducerCPU
+from reducers import NodeAgreggateReducerCPU, ReduceImmediatelly
 from ourdist import OurDist, SeqDist, SeqMergeDist, WarmupDist
 from config import parse_args
 
@@ -40,8 +40,9 @@ def worker_process(node_id, worker_id, config, reducer, gpu_reduce=False):
     
     start_time = time.time()
     batch_count = 0
-    config.limit_batches = 3
     for epoch in range(config.epoch_count):
+        if batch_count >= config.limit_batches:
+            break
         gener = train_set.__iter__()
         while True:
             if batch_count >= config.limit_batches:
@@ -217,6 +218,7 @@ def experiment2(config):
     main_onestep_reduce(config)
 
 def experiment_nccl(config):
+    main_warmup(config)
     main_ddp(config)
     main_ourdist_nccl(config)
 
@@ -241,7 +243,7 @@ def init_process(config):
 if __name__ == "__main__":
     print_d(f"Number of available devices {torch.cuda.device_count()}", Level.INFO)
     config = parse_args()
-    config.folder = f"results/{config.job_id}"
+    config.folder = f"results/{config.experiment}_{config.total_dev}_{config.job_id}"
     os.makedirs(config.folder, exist_ok=True)
     torch.multiprocessing.set_start_method('spawn')
     init_process(config)
