@@ -4,27 +4,25 @@ collected_data = []
 starts = {}
 sums = {}
 counts = {}
-experiment_name = None
 
-def start_timing_experiment(exp_n):
-    global experiment_name
-    if experiment_name != None:
-        print("adding data")
-        collected_data.append((experiment_name, {k : v/counts[k] for (k,v) in sums.items()}))
-    experiment_name = exp_n
+def end_timing_experiment(experiment_name, extra_fields={}):
+    global sums, counts, starts
+    collected_data.append((experiment_name, dict({k : v/counts[k] for (k,v) in sums.items()}, **extra_fields)))
+    sums = counts = starts = {}
 
 def start_timer(name):
     starts[name] = time.time()*1000
 
 def end_timer(name):
-    sums[name] = time.time()*1000 - starts[name]
+    if name not in sums:
+        sums[name] = 0
+    sums[name] += time.time()*1000 - starts[name]
     if name not in counts:
         counts[name] = 1
     else:
         counts[name] += 1
 
 def writeout_timer(filename):
-    start_timing_experiment("done")    
     print(f"Writing out a log file ({filename})")
     if len(collected_data) == 0:
         return

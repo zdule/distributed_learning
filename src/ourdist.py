@@ -51,7 +51,7 @@ class Group:
         return False
 
 class OurDist:
-    def _fusion_grouping_gen(model, grouping_size=32000000):
+    def _fusion_grouping_gen(model, grouping_size=0):
         params = reversed(list(model.parameters()))
         to_fuse = []
         running_size = 0
@@ -67,7 +67,7 @@ class OurDist:
         if to_fuse != []:
             yield to_fuse
 
-    def __init__(self, model, reducer):
+    def __init__(self, model, reducer, grouping_size=0):
         self.model = model
         self.reducer = reducer
 
@@ -78,7 +78,7 @@ class OurDist:
         self.start_processing_event2 = Event()
         self.shutting_down = False
 
-        self.groups = [Group(i, tensors, self.get_hook_for_group) for i, tensors in enumerate(OurDist._fusion_grouping_gen(self.model))]
+        self.groups = [Group(i, tensors, self.get_hook_for_group) for i, tensors in enumerate(OurDist._fusion_grouping_gen(self.model, grouping_size))]
         self.threads = [Thread(target=self.send_gradients_to_center_thread),
                         Thread(target=self.recieve_gradients_from_center_thread)]
         for thread in self.threads:
@@ -178,11 +178,11 @@ class OurDist:
         return getattr(self.model,attr)
 
 class SeqMergeDist:
-    def __init__(self, model, reducer):
+    def __init__(self, model, reducer, grouping_size):
         self.model = model
         self.reducer = reducer
 
-        self.groups = [Group(i, tensors, None) for i, tensors in enumerate(OurDist._fusion_grouping_gen(self.model))]
+        self.groups = [Group(i, tensors, None) for i, tensors in enumerate(OurDist._fusion_grouping_gen(self.model, grouping_size))]
 
     def cleanup(self):
         pass
@@ -203,7 +203,7 @@ class SeqMergeDist:
         return getattr(self.model,attr)
 
 class SeqDist:
-    def __init__(self, model, reducer):
+    def __init__(self, model, reducer, _grouping_size):
         self.model = model
         self.reducer = reducer
 

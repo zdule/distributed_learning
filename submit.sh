@@ -44,10 +44,10 @@ total_gpus=$[${numtasks}*4]
 echo $total_gpus
 
 #! Full path to application executable: 
-application="python3 src/main.py"
+application="python3 src/new_main.py"
 
 #! Run options for the application:
-options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 4 $total_gpus $ip_addr ib0 imagenet /rds/user/dz308/hpc-work"
+options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 4 $total_gpus $ip_addr ib0 imagenet /rds/user/dz308/hpc-work 1"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory

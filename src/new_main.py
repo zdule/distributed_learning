@@ -15,7 +15,8 @@ from types import SimpleNamespace
 
 from utils import Level, print_d, eval_arg
 
-from timing import start_timing_experiment, start_timer, end_timer, writeout_timer
+from timing import end_timing_experiment, start_timer, end_timer, writeout_timer
+import time
 from allreduce import built_in_allreduce, ring_allreduce
 from reducers import NodeAgreggateReducerCPU
 from ourdist import OurDist, SeqDist, SeqMergeDist
@@ -26,23 +27,29 @@ def worker_process(node_id, worker_id, config, reducer):
     train_set = config.get_partition_dataset(node_id, worker_id, config.node_dev, config.total_dev, config.dataset_root)
     device = config.devices[worker_id]
     model = config.create_network().to(device)
-    model = config.distribute_model(model, reducer)
+    model = config.distribute_model(model, reducer, config.grouping_size)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
     
-    if node_id == 0 and worker_id == 0:
-        loss_f = open("loss.txt", "w")
-    else:
-        loss_f = None
-
-    start_timing_experiment("run")    
+    loss_f = open(config.experiment_name+"_loss.txt", "a")
+    
+    start_time = time.time()
+    batch_count = 0
+    #while time.time() - start_time < config.duration and epoch_count < config.epoch_count:
     for epoch in range(config.epoch_count):
-        for data, target in islice(train_set,config.limit_batches):
+        for data, target in islice(train_set, config.limit_batches):
+            start_timer("batch")
+            #if time.time() - start_time > config.duration:
+                #break
+            batch_count += 1
+
             print_d("WORKER: Moving training data to device", Level.DEBUG)
             start_timer("data2dev")
             data, target = data.to(device), target.to(device)
             end_timer("data2dev")
-
+            
+            start_timer("zero_grad")
             optimizer.zero_grad()
+            end_timer("zero_grad")
 
             # Feed forward
             print_d("WORKER: Perfroming feed forward", Level.DEBUG)
@@ -56,22 +63,28 @@ def worker_process(node_id, worker_id, config, reducer):
             start_timer("backprop")
             loss.backward()
             end_timer("backprop")
-    
+   
+            start_timer("sync") 
             model.sync_gradients()
+            end_timer("sync")
 
             # Optimizer step 
             start_timer("optimizer_step")
             optimizer.step()
             end_timer("optimizer_step")
 
-            if loss_f != None: 
-                print(loss)
-                loss_f.write(str(loss) + "\n")
-    if loss_f != None:
-        loss_f.close()
+            loss_message = f"Worker {node_id}:{worker_id} loss for batch {batch_count}: {loss}"
+            print_d(loss_message, Level.DEBUG)
+            loss_f.write(loss_message + "\n")
+            end_timer("batch")
+    end_time = time.time()
+
+    loss_f.close()
     model.cleanup()
     reducer.cleanup()
-    writeout_timer("times.csv")
+
+    end_timing_experiment(config.experiment_name, extra_fields={"throughput" : batch_count/(end_time-start_time), "batch_time" : (end_time-start_time)*1000/batch_count})
+    writeout_timer(config.experiment_name+"_times.csv")
 
 def worker_process_wrapper(*args):
     try:
@@ -80,12 +93,13 @@ def worker_process_wrapper(*args):
         traceback.print_exc(file=sys.stdout)
         sys.stdout.flush()
 
-def main_process(config):
+def main_ourdist(config):
     config.distribute_model = OurDist
     cpu_reducer = NodeAgreggateReducerCPU(built_in_allreduce, config.node_dev)
+    config.experiment_name = "ourdist"
 
     for i in range(config.node_dev):
-        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i,config, cpu_reducer.reducers[i]))
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, cpu_reducer.reducers[i]))
         p.start()
     cpu_reducer.pump()
 
@@ -101,15 +115,29 @@ def main_seq(config):
 def main_seq_merge(config):
     config.distribute_model = SeqMergeDist
     cpu_reducer = NodeAgreggateReducerCPU(built_in_allreduce, config.node_dev)
+    config.experiment_name = "seq_merge"
 
     for i in range(config.node_dev):
         p = mp.Process(target=worker_process_wrapper, args=(config.rank, i,config, cpu_reducer.reducers[i]))
         p.start()
     cpu_reducer.pump()
 
+def main_overlap(config):
+    config.distribute_model = OurDist
+    cpu_reducer = NodeAgreggateReducerCPU(built_in_allreduce, config.node_dev)
+    config.experiment_name = "overlap"
+    old_grouping = config.grouping_size
+    config.grouping_size = 0
+
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, cpu_reducer.reducers[i]))
+        p.start()
+    cpu_reducer.pump()
+    config.grouping_size = old_grouping
+
 def main_ddp(config):
-    def distribute_model(model, reducer):
-        dmodel = DDP(model, device_ids=None, bucket_cap_mb=0, find_unused_parameters=True)
+    def distribute_model(model, reducer, grouping_size):
+        dmodel = DDP(model, device_ids=None, bucket_cap_mb=grouping_size//1024*1024, find_unused_parameters=True)
         dmodel.sync_gradients = lambda:None
         dmodel.cleanup = lambda:None
         dmodel.parameters = lambda: model.parameters()
@@ -117,8 +145,14 @@ def main_ddp(config):
 
     dummy_reducer = SimpleNamespace(cleanup=lambda:None)
     config.distribute_model = distribute_model
+    config.experiment_name = "ddp"
 
     worker_process(config.rank, 0, config, dummy_reducer)
+
+def experiment1(config):
+    main_ourdist(config)
+    main_seq_merge(config)
+    main_overlap(config)
 
 def init_process(config):
     """ Initialize the distributed environment. """
@@ -137,4 +171,4 @@ if __name__ == "__main__":
     config = parse_args()
     torch.multiprocessing.set_start_method('spawn')
     init_process(config)
-    main_ddp(config)
+    experiment1(config)

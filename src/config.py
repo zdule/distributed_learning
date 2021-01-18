@@ -38,6 +38,7 @@ def parse_args():
 
     config.epoch_count = 1
     config.limit_batches = 3
+    config.grouping_size = 25*1024*1024
 
     if config.use_gpu == 1:
         config.devices = [f"cuda:{i}" for i in range(config.node_dev)]
