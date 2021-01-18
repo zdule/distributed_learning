@@ -36,9 +36,16 @@ def worker_process(node_id, worker_id, config, reducer):
     batch_count = 0
     #while time.time() - start_time < config.duration and epoch_count < config.epoch_count:
     for epoch in range(config.epoch_count):
-        for data, target in islice(train_set, config.limit_batches):
+        gener = islice(train_set, config.limit_batches)
+        while True:
+        #for data, target in islice(train_set, config.limit_batches):
             print(f"Node {node_id}, worker {worker_id}, batch, {batch_count} time {time.time()}")
             start_timer("batch")
+            start_timer("get_data")
+            nx = next(gener, None)
+            if nx == None: break
+            data, target = nx
+            end_timer("get_data")
             #if time.time() - start_time > config.duration:
                 #break
             batch_count += 1
@@ -160,6 +167,7 @@ def main_central_reduce(config):
         p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, cpu_reducer.reducers[i]))
         p.start()
     cpu_reducer.pump()
+    worker_process(config.rank, 0, config, dummy_reducer)
 
 def experiment1(config):
     main_ourdist(config)
