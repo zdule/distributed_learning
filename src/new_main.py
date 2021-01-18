@@ -176,7 +176,7 @@ def main_overlap(config):
 
 def main_ddp(config):
     def distribute_model(model, reducer, grouping_size, _grad_buffer_device="cpu"):
-        dmodel = DDP(model, device_ids=None, bucket_cap_mb=grouping_size//1024*1024, find_unused_parameters=True)
+        dmodel = DDP(model, device_ids=None, bucket_cap_mb=grouping_size/1024/1024, find_unused_parameters=True)
         dmodel.sync_gradients = lambda:None
         dmodel.cleanup = lambda:None
         dmodel.parameters = lambda: model.parameters()
@@ -222,8 +222,21 @@ def experiment_nccl(config):
     main_ddp(config)
     main_ourdist_nccl(config)
 
-def all_reduce_experiment(config):
-    pass
+fusion_test_sizes_k = [1024, 4*1024, 16*1024, 64*1024]
+def fusion_experiment(config, main_f):
+    main_warmup(config)
+    folder_name = config.folder
+    for size_k in fusion_test_sizes_k:
+        config.grouping_size = size_k*1024
+        config.folder = folder_name + f"/{size_k}"
+        os.makedirs(config.folder, exist_ok=True)
+        main_f(config)
+
+def fusion_experiment_ddp(config):
+    fusion_experiment(config, main_ddp)
+
+def fusion_experiment_ourdist(config):
+    fusion_experiment(config, main_ourdist)
 
 def init_process(config):
     """ Initialize the distributed environment. """
