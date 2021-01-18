@@ -11,14 +11,14 @@ from threading import Event, Thread
 from queue import Queue
 
 class Group:
-    def __init__(self, group_id, tensors, get_hook):
+    def __init__(self, group_id, tensors, get_hook, grad_buff_device="cpu"):
         self.group_id = group_id
         self.ready = 0
         self.tensors = tensors
         self.event = Event()
 
         total_size = sum((t.numel() for t in tensors))
-        self.grad_buffer = torch.empty(total_size, dtype=tensors[0].dtype)
+        self.grad_buffer = torch.empty(total_size, dtype=tensors[0].dtype, device=grad_buff_device)
 
         if get_hook != None:
             self.hooks = []
@@ -67,7 +67,7 @@ class OurDist:
         if to_fuse != []:
             yield to_fuse
 
-    def __init__(self, model, reducer, grouping_size=0):
+    def __init__(self, model, reducer, grouping_size=0, grad_buff_device="cpu"):
         self.model = model
         self.reducer = reducer
 
@@ -78,7 +78,7 @@ class OurDist:
         self.start_processing_event2 = Event()
         self.shutting_down = False
 
-        self.groups = [Group(i, tensors, self.get_hook_for_group) for i, tensors in enumerate(OurDist._fusion_grouping_gen(self.model, grouping_size))]
+        self.groups = [Group(i, tensors, self.get_hook_for_group, grad_buff_device) for i, tensors in enumerate(OurDist._fusion_grouping_gen(self.model, grouping_size))]
         self.threads = [Thread(target=self.send_gradients_to_center_thread),
                         Thread(target=self.recieve_gradients_from_center_thread)]
         for thread in self.threads:
@@ -178,7 +178,7 @@ class OurDist:
         return getattr(self.model,attr)
 
 class SeqMergeDist:
-    def __init__(self, model, reducer, grouping_size):
+    def __init__(self, model, reducer, grouping_size, _grad_buffer_device="cpu"):
         self.model = model
         self.reducer = reducer
 
@@ -203,7 +203,7 @@ class SeqMergeDist:
         return getattr(self.model,attr)
 
 class SeqDist:
-    def __init__(self, model, reducer, _grouping_size):
+    def __init__(self, model, reducer, _grouping_size, _grad_buffer_device="cpu"):
         self.model = model
         self.reducer = reducer
 
@@ -223,4 +223,27 @@ class SeqDist:
 
     def __getattr__(self, attr):
         return getattr(self.model,attr)
-    
+
+class WarmupDist:
+    def __init__(self, model, reducer, _grouping_size, _grad_buffer_device="cpu"):
+        self.model = model
+        self.reducer = reducer
+        self.out = None
+
+    def cleanup(self):
+        pass
+
+    def sync_gradients(self):
+        pass
+
+    def forward(self, data):
+        if self.out == None:
+            self.out = torch.zeros_like(self.model.forward(data), requires_grad=True)
+        return self.out
+
+    def __call__(self, data):
+        return self.forward(data)
+
+    def __getattr__(self, attr):
+        return getattr(self.model,attr)
+

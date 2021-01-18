@@ -17,17 +17,19 @@ from utils import Level, print_d, eval_arg
 
 from timing import end_timing_experiment, start_timer, end_timer, writeout_timer
 import time
-from allreduce import built_in_allreduce, ring_allreduce
+from allreduce import built_in_allreduce, ring_allreduce, ring_allreduce_gpu
 from reducers import NodeAgreggateReducerCPU
-from ourdist import OurDist, SeqDist, SeqMergeDist
+from ourdist import OurDist, SeqDist, SeqMergeDist, WarmupDist
 from config import parse_args
 
-def worker_process(node_id, worker_id, config, reducer):
+pgroups = []
+
+def worker_process(node_id, worker_id, config, reducer, gpu_reduce=False):
     torch.manual_seed(1234)
     train_set = config.get_partition_dataset(node_id, worker_id, config.node_dev, config.total_dev, config.dataset_root)
     device = config.devices[worker_id]
     model = config.create_network().to(device)
-    model = config.distribute_model(model, reducer, config.grouping_size)
+    model = config.distribute_model(model, reducer, config.grouping_size, "cpu" if not gpu_reduce else device)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
     
     loss_f = open(config.experiment_name+"_loss.txt", "a")
@@ -102,9 +104,22 @@ def worker_process_wrapper(*args):
         traceback.print_exc(file=sys.stdout)
         sys.stdout.flush()
 
+def main_warmup(config):
+    config.distribute_model = WarmupDist
+    dummy_reducer = SimpleNamespace(cleanup=print)
+    config.experiment_name = "warmup"
+
+    procs = []
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, dummy_reducer))
+        p.start()
+        procs.append(p)
+    for p in procs:
+        p.join()
+
 def main_ourdist(config):
     config.distribute_model = OurDist
-    cpu_reducer = NodeAgreggateReducerCPU(built_in_allreduce, config.node_dev)
+    cpu_reducer = NodeAgreggateReducerCPU(ring_allreduce, config.node_dev)
     config.experiment_name = "ourdist"
 
     for i in range(config.node_dev):
@@ -112,9 +127,19 @@ def main_ourdist(config):
         p.start()
     cpu_reducer.pump()
 
+def main_ourdist_nccl(config):
+    config.distribute_model = OurDist
+    cpu_reducer = NodeAgreggateReducerCPU(ring_allreduce_gpu, config.node_dev, pgroups)
+    config.experiment_name = "ourdist_nccl"
+
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, cpu_reducer.reducers[i], True))
+        p.start()
+    cpu_reducer.pump()
+
 def main_seq(config):
     config.distribute_model = SeqDist
-    cpu_reducer = NodeAgreggateReducerCPU(built_in_allreduce, config.node_dev)
+    cpu_reducer = NodeAgreggateReducerCPU(ring_allreduce, config.node_dev)
 
     for i in range(config.node_dev):
         p = mp.Process(target=worker_process_wrapper, args=(config.rank, i,config, cpu_reducer.reducers[i]))
@@ -123,7 +148,7 @@ def main_seq(config):
 
 def main_seq_merge(config):
     config.distribute_model = SeqMergeDist
-    cpu_reducer = NodeAgreggateReducerCPU(built_in_allreduce, config.node_dev)
+    cpu_reducer = NodeAgreggateReducerCPU(ring_allreduce, config.node_dev)
     config.experiment_name = "seq_merge"
 
     for i in range(config.node_dev):
@@ -133,7 +158,7 @@ def main_seq_merge(config):
 
 def main_overlap(config):
     config.distribute_model = OurDist
-    cpu_reducer = NodeAgreggateReducerCPU(built_in_allreduce, config.node_dev)
+    cpu_reducer = NodeAgreggateReducerCPU(ring_allreduce, config.node_dev)
     config.experiment_name = "overlap"
     old_grouping = config.grouping_size
     config.grouping_size = 0
@@ -145,7 +170,7 @@ def main_overlap(config):
     config.grouping_size = old_grouping
 
 def main_ddp(config):
-    def distribute_model(model, reducer, grouping_size):
+    def distribute_model(model, reducer, grouping_size, _grad_buffer_device="cpu"):
         dmodel = DDP(model, device_ids=None, bucket_cap_mb=grouping_size//1024*1024, find_unused_parameters=True)
         dmodel.sync_gradients = lambda:None
         dmodel.cleanup = lambda:None
@@ -170,6 +195,7 @@ def main_central_reduce(config):
     worker_process(config.rank, 0, config, dummy_reducer)
 
 def experiment1(config):
+    main_warmup(config)
     main_ourdist(config)
     main_seq_merge(config)
     main_overlap(config)
@@ -179,6 +205,10 @@ def experiment2(config):
     main_central_reduce(config)
     main_onestep_reduce(config)
 
+def experiment_nccl(config):
+    main_ddp(config)
+    main_ourdist_nccl(config)
+
 def init_process(config):
     """ Initialize the distributed environment. """
     print(config)
@@ -187,6 +217,11 @@ def init_process(config):
     os.environ['GLOO_SOCKET_IFNAME'] = config.ifname
 
     dist.init_process_group(config.backend, rank=config.rank, world_size=config.size)
+    
+    global pgroups 
+    pgroups = []
+    for i in range(config.size):
+        pgroups.append(dist.new_group([i,(i+1)%config.size]))
 
     print("Connection initialised")
 
@@ -196,4 +231,4 @@ if __name__ == "__main__":
     config = parse_args()
     torch.multiprocessing.set_start_method('spawn')
     init_process(config)
-    experiment1(config)
+    experiment_nccl(config)

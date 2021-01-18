@@ -67,7 +67,7 @@ def _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset):
     partition = partitioner.use(node_id * node_dev + worker_id)
     train_set = torch.utils.data.DataLoader(partition,
                                               batch_size=int(bsz),
-                                              shuffle=True)
+                                              shuffle=True, num_workers = 2)
     return train_set
 
 

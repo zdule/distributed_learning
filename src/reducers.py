@@ -36,13 +36,14 @@ class NodeAggregateReducer:
             self.to_cpu_queue.put(None)
 
 class NodeAgreggateReducerCPU:
-    def __init__(self, reduce_fn, ndevs):
+    def __init__(self, reduce_fn, ndevs, groups=None):
         self.reduce_fn = reduce_fn
         self.ndevs = ndevs
         self.to_cpu_queues = [mp.Queue() for _ in range(ndevs)]
         self.from_cpu_queues = [mp.Queue() for _ in range(ndevs)]
         self.reducers = [NodeAggregateReducer(to_cpu, from_cpu, i==0) for (i, (to_cpu, from_cpu)) 
                                         in enumerate(zip(self.to_cpu_queues, self.from_cpu_queues))]
+        self.groups = groups
 
     def pump(self):
         while True:
@@ -56,7 +57,10 @@ class NodeAgreggateReducerCPU:
                 else:
                     agg[:len(buff)] += buff
             agg /= float(self.ndevs)
-            self.reduce_fn(agg[:len(buff)])
+            if self.groups == None:
+                self.reduce_fn(agg[:len(buff)])
+            else:
+                self.reduce_fn(agg[:len(buff)], self.groups)
             for que in self.from_cpu_queues:
                 que.put(agg[:len(buff)])
             del agg
