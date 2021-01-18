@@ -5,13 +5,13 @@
 #! Which project should be charged (NB Wilkes2 projects end in '-GPU'):
 #SBATCH -A LANE-SL3-GPU 
 #! How many whole nodes should be allocated?
-#SBATCH --nodes=2
+#SBATCH --nodes=1
 #! How many (MPI) tasks will there be in total?
 #! Note probably this should not exceed the total number of GPUs in use.
-#SBATCH --ntasks=2
+#SBATCH --ntasks=1
 #! Specify the number of GPUs per node (between 1 and 4; must be 4 if nodes>1).
 #! Note that the job submission script will enforce no more than 3 cpus per GPU.
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:2
 #! How much wallclock time will be required?
 #SBATCH --time=00:10:00
 #! What types of email messages do you wish to receive?
@@ -47,7 +47,7 @@ echo $total_gpus
 application="python3 src/new_main.py"
 
 #! Run options for the application:
-options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 4 $total_gpus $ip_addr ib0 imagenet /rds/user/dz308/hpc-work 1"
+options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 2 2 $ip_addr $ip_addr ib0 imagenet /rds/user/dz308/hpc-work 1"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory

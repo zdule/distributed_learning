@@ -37,6 +37,7 @@ def worker_process(node_id, worker_id, config, reducer):
     #while time.time() - start_time < config.duration and epoch_count < config.epoch_count:
     for epoch in range(config.epoch_count):
         for data, target in islice(train_set, config.limit_batches):
+            print(f"Node {node_id}, worker {worker_id}, batch, {batch_count} time {time.time()}")
             start_timer("batch")
             #if time.time() - start_time > config.duration:
                 #break
@@ -77,6 +78,7 @@ def worker_process(node_id, worker_id, config, reducer):
             print_d(loss_message, Level.DEBUG)
             loss_f.write(loss_message + "\n")
             end_timer("batch")
+            print(f"End: Node {node_id}, worker {worker_id}, batch, {batch_count} time {time.time()}")
     end_time = time.time()
 
     loss_f.close()
@@ -149,10 +151,25 @@ def main_ddp(config):
 
     worker_process(config.rank, 0, config, dummy_reducer)
 
+def main_central_reduce(config):
+    config.distribute_model = OurDist
+    cpu_reducer = NodeAgreggateReducerCPU(built_in_allreduce, config.node_dev)
+    config.experiment_name = "ourdist"
+
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, cpu_reducer.reducers[i]))
+        p.start()
+    cpu_reducer.pump()
+
 def experiment1(config):
     main_ourdist(config)
     main_seq_merge(config)
     main_overlap(config)
+
+def experiment2(config):
+    main_ddp(config)
+    main_central_reduce(config)
+    main_onestep_reduce(config)
 
 def init_process(config):
     """ Initialize the distributed environment. """

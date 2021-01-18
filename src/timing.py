@@ -23,6 +23,7 @@ def end_timer(name):
         counts[name] += 1
 
 def writeout_timer(filename):
+    global collected_data
     print(f"Writing out a log file ({filename})")
     if len(collected_data) == 0:
         return
@@ -32,5 +33,6 @@ def writeout_timer(filename):
         f.write(d[0] + ", " + ", ".join((str(d[1][k]) for k in collected_data[0][1].keys())) + "\n")
     f.flush()
     f.close()
+    collected_data = []
     print("Done writing out log file")
     
