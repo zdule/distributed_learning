@@ -27,7 +27,10 @@ def parse_args():
                         help='root folder for the datasets')
     parser.add_argument('use_gpu', metavar='g', type=int, default=0,
                         help='whether to use the gpu or just cpu')
-
+    parser.add_argument('--job_id', dest='job_id', type=str, default="job",
+                        help='unique string used for results folder name')
+    parser.add_argument('--experiment', dest='experiment', type=str, default="main_ourdist",
+                        help='which experiment function to run')
     config = parser.parse_args()
     config.size = int(eval_arg(config.size))
     config.rank = int(eval_arg(config.rank))

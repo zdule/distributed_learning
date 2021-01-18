@@ -25,14 +25,15 @@ class Partition(object):
 
 class DataPartitioner(object):
 
-    def __init__(self, data, sizes=[0.7, 0.2, 0.1], seed=1234):
+    def __init__(self, data, total_dev, batch_size, seed=1234):
         self.data = data
         self.partitions = []
         data_len = len(data)
+        batches_per_dev = data_len // total_dev // batch_size
+        part_len = batches_per_dev * batch_size
         indexes = torch.randperm(data_len)
 
-        for frac in sizes:
-            part_len = int(frac * data_len)
+        for _ in range(total_dev):
             self.partitions.append(indexes[0:part_len])
             indexes = indexes[part_len:]
 
@@ -46,8 +47,7 @@ def _partition_helper(node_dev, total_dev, dataset):
     """
 
     bsz = PER_WORKER_BATCH_SIZE
-    partition_sizes = [1.0 / total_dev for _ in range(total_dev)]
-    partition = DataPartitioner(dataset, partition_sizes)
+    partition = DataPartitioner(dataset, total_dev, bsz)
     partitions = [partition.use(dist.get_rank() * node_dev + i)
                   for i in range(node_dev)]
     train_sets = [torch.utils.data.DataLoader(partition,
@@ -62,8 +62,7 @@ def _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset):
     """
 
     bsz = PER_WORKER_BATCH_SIZE
-    partition_sizes = [1.0 / total_dev for _ in range(total_dev)]
-    partitioner = DataPartitioner(dataset, partition_sizes)
+    partitioner = DataPartitioner(dataset, total_dev, bsz)
     partition = partitioner.use(node_id * node_dev + worker_id)
     train_set = torch.utils.data.DataLoader(partition,
                                               batch_size=int(bsz),

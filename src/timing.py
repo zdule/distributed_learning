@@ -9,6 +9,9 @@ def end_timing_experiment(experiment_name, extra_fields={}):
     global sums, counts, starts
     collected_data.append((experiment_name, dict({k : v/counts[k] for (k,v) in sums.items()}, **extra_fields)))
     sums = counts = starts = {}
+    sums = {}
+    counts = {}
+    stars = {}
 
 def start_timer(name):
     starts[name] = time.time()*1000

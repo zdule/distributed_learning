@@ -5,6 +5,42 @@ def built_in_allreduce(send):
     dist.all_reduce(send, op=dist.ReduceOp.SUM)
     send /= float(dist.get_world_size())
 
+def central_allreduce(send):
+    """
+    All reduce where node 0 aggregates gradients and sends out
+    :param send: The gradients computed at an individual node. The
+        function overwrites them with the shared averages.
+    """
+
+    rank = dist.get_rank()
+    size = dist.get_world_size()
+    if size <= 1:
+        return
+
+    recv_buffers = [torch.empty_like(send) for _ in range(size)]
+    reqs = [None]*size
+
+    if rank == 0:
+
+        # Gather
+        for i in range(1, size):
+            reqs[i] = (dist.irecv(recv_buffers[i], i))  # Receiving needs to be blocking
+
+        for i in range(1, size):
+            reqs[i].wait()     # Need to wait till sending is finished
+            send[:] += recv_buffers[i]
+
+        send /= float(size)
+
+        #Broadcast
+        for i in range(1, size):
+            reqs[i] = dist.isend(send, i) # Receiving needs to be blocking
+        for i in range(1, size):
+            reqs[i].wait()
+    else:
+        dist.send(send, 0)
+        dist.recv(send, 0)
+
 def ring_allreduce(send):
     """
     Custom ring all-reduce fucntion that averages the gradients.
