@@ -125,16 +125,22 @@ def ring_allreduce_gpu(send, groups):
         to_send = (rank-i) % size
         to_recv = (to_send - 1) % size
         if rank != size -1:
+            print_d(f"Node {rank}: first pass {i} sending", Level.DEBUG)
             req = dist.broadcast(chunks[to_send], rank, group=right_group, async_op=True)
             send_reqs.append(req)
 
+            print_d(f"Node {rank}: first pass {i} recieving", Level.DEBUG)
             req2 = dist.broadcast(recv_buffer[:len(chunks[to_recv])], left, group=left_group, async_op=True)
             req2.wait()
+            print_d(f"Node {rank}: first pass {i} done", Level.DEBUG)
         else:
+            print_d(f"Node {rank}: first pass {i} recieving", Level.DEBUG)
             req2 = dist.broadcast(recv_buffer[:len(chunks[to_recv])], left, group=left_group, async_op=True)
             req2.wait()
+            print_d(f"Node {rank}: first pass {i} sending", Level.DEBUG)
             req = dist.broadcast(chunks[to_send], rank, group=right_group, async_op=True)
             send_reqs.append(req)
+            print_d(f"Node {rank}: first pass {i} done", Level.DEBUG)
             
         chunks[to_recv][:] += recv_buffer[:len(chunks[to_recv])]
 
