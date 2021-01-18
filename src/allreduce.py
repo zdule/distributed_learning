@@ -1,5 +1,6 @@
 import torch
 import torch.distributed as dist
+from utils import Level, print_d
 
 def built_in_allreduce(send):
     dist.all_reduce(send, op=dist.ReduceOp.SUM)
@@ -118,6 +119,7 @@ def ring_allreduce_gpu(send, groups):
 
     send_reqs = []
 
+    print_d("Allreduce first pass", Level.DEBUG)
     # First pass
     for i in range(size - 1):
         to_send = (rank-i) % size
@@ -130,12 +132,14 @@ def ring_allreduce_gpu(send, groups):
         req2.wait()
         chunks[to_recv][:] += recv_buffer[:len(chunks[to_recv])]
 
+    print_d("Allreduce wait sends", Level.DEBUG)
     for send_req in send_reqs:
         send_req.wait()     # Need to wait till sending is finished
     send_reqs = []
 
     # We now have result[r+1] on node with rank r
 
+    print_d("Allreduce second pass", Level.DEBUG)
     # Second pass
     for i in range(size-1):
         to_send = (rank - i + 1) % size
@@ -148,9 +152,11 @@ def ring_allreduce_gpu(send, groups):
         req2.wait()
         chunks[to_recv][:] = recv_buffer[:len(
             chunks[to_recv])]  # [:] indicates deepcopy
-
+    
+    print_d("Allreduce wait send 2", Level.DEBUG)
     for send_req in send_reqs:
         send_req.wait()     # Need to wait till sending is finished
 
+    print_d("Allreduce done", Level.DEBUG)
     # Dividing result by the number of devices
     send /= float(size)

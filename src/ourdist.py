@@ -111,6 +111,7 @@ class OurDist:
                     group.event.wait()
                     group.fuse()
                     self.reducer.put(group.grad_buffer)
+                    print_d(f"Set grad group {group.group_id}", Level.DEBUG)
         except Exception as e:
             traceback.print_exc(file=sys.stdout)
             sys.stdout.flush()
@@ -126,6 +127,7 @@ class OurDist:
 
                 for group in self.groups:
                     group.unfuse(self.reducer.get())
+                    print_d(f"Recieved grad group {group.group_id}", Level.DEBUG)
                 self.done_processing_event.set()
         except Exception as e:
             traceback.print_exc(file=sys.stdout)

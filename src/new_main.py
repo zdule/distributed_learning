@@ -222,6 +222,9 @@ def experiment_nccl(config):
     main_ddp(config)
     main_ourdist_nccl(config)
 
+def all_reduce_experiment(config):
+    pass
+
 def init_process(config):
     """ Initialize the distributed environment. """
     print(config)
