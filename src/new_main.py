@@ -231,4 +231,4 @@ if __name__ == "__main__":
     config = parse_args()
     torch.multiprocessing.set_start_method('spawn')
     init_process(config)
-    experiment_nccl(config)
+    experiment1(config)
