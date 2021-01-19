@@ -209,6 +209,17 @@ def main_onestep_reduce(config):
 
     worker_process(config.rank, 0, config, cpu_reducer)
 
+def main_single(config):
+    def distribute_model(model, reducer, grouping_size, _grad_buffer_device="cpu"):
+        model.sync_gradients = lambda:None
+        model.cleanup = lambda:None
+        return model
+    config.distribute_model = distribute_model
+    dummy_reducer = SimpleNamespace(cleanup=lambda:None)
+    config.experiment_name = "single"
+
+    worker_process(0, 0, config, dummy_reducer)
+
 def experiment1(config):
     main_warmup(config)
     main_ourdist(config)
