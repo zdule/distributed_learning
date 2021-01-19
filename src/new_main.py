@@ -237,6 +237,10 @@ def experiment_nccl(config):
     main_ddp(config)
     main_ourdist_nccl(config)
 
+def experiment_ourdist_nccl(config):
+    main_warmup(config)
+    main_ourdist_nccl(config)
+
 fusion_test_sizes_k = [1024, 4*1024, 16*1024, 64*1024]
 def fusion_experiment(config, main_f):
     main_warmup(config)
