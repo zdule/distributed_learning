@@ -56,6 +56,8 @@ def ring_allreduce(send):
         return
 
     chunks = torch.chunk(send, size)
+    if size > len(chunks):
+        chunks = [c for c in chunks] + [torch.empty(1, dtype=send.dtype)]*(size-len(chunks))
     maxsize = max((chunk.size() for chunk in chunks))
     recv_buffer = torch.empty(maxsize, dtype=send.dtype)
 
@@ -109,6 +111,8 @@ def ring_allreduce_gpu(send, groups):
         return
 
     chunks = torch.chunk(send, size)
+    if size > len(chunks):
+        chunks = [c for c in chunks] + [torch.empty(1, dtype=send.dtype, device=send.device)]*(size-len(chunks))
     maxsize = max((chunk.size() for chunk in chunks))
     recv_buffer = torch.empty(maxsize, dtype=send.dtype, device=send.device)
 
