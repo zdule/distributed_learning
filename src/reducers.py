@@ -31,10 +31,9 @@ class NodeAggregateReducer:
         buff =  self.from_cpu_queue.get()
         return buff
 
-
     def cleanup(self):
-        if self.should_cleanup:
-            self.to_cpu_queue.put(None)
+#if self.should_cleanup:
+        self.to_cpu_queue.put(None)
 
 class NodeAgreggateReducerCPU:
     def __init__(self, reduce_fn, ndevs, groups=None):
@@ -52,6 +51,9 @@ class NodeAgreggateReducerCPU:
             for que in self.to_cpu_queues:
                 buff = que.get()
                 if buff == None:
+                    for que2 in self.to_cpu_queues[1:]:
+                        assert(que != que2)
+                        assert(que2.get() == None)
                     return
                 if agg == None:
                     agg = buff.detach().clone()

@@ -119,39 +119,30 @@ def ring_allreduce_gpu(send, groups):
 
     send_reqs = []
 
-    print_d("Allreduce first pass", Level.DEBUG)
     # First pass
     for i in range(size - 1):
         to_send = (rank-i) % size
         to_recv = (to_send - 1) % size
         if rank != size -1:
-            print_d(f"Node {rank}: first pass {i} sending", Level.DEBUG)
             req = dist.broadcast(chunks[to_send], rank, group=right_group, async_op=True)
             send_reqs.append(req)
 
-            print_d(f"Node {rank}: first pass {i} recieving", Level.DEBUG)
             req2 = dist.broadcast(recv_buffer[:len(chunks[to_recv])], left, group=left_group, async_op=True)
             req2.wait()
-            print_d(f"Node {rank}: first pass {i} done", Level.DEBUG)
         else:
-            print_d(f"Node {rank}: first pass {i} recieving", Level.DEBUG)
             req2 = dist.broadcast(recv_buffer[:len(chunks[to_recv])], left, group=left_group, async_op=True)
             req2.wait()
-            print_d(f"Node {rank}: first pass {i} sending", Level.DEBUG)
             req = dist.broadcast(chunks[to_send], rank, group=right_group, async_op=True)
             send_reqs.append(req)
-            print_d(f"Node {rank}: first pass {i} done", Level.DEBUG)
             
         chunks[to_recv][:] += recv_buffer[:len(chunks[to_recv])]
 
-    print_d("Allreduce wait sends", Level.DEBUG)
     for send_req in send_reqs:
         send_req.wait()     # Need to wait till sending is finished
     send_reqs = []
 
     # We now have result[r+1] on node with rank r
 
-    print_d("Allreduce second pass", Level.DEBUG)
     # Second pass
     for i in range(size-1):
         to_send = (rank - i + 1) % size
@@ -168,10 +159,8 @@ def ring_allreduce_gpu(send, groups):
             send_reqs.append(req)
         chunks[to_recv][:] = recv_buffer[:len(chunks[to_recv])]  # [:] indicates deepcopy
     
-    print_d("Allreduce wait send 2", Level.DEBUG)
     for send_req in send_reqs:
         send_req.wait()     # Need to wait till sending is finished
 
-    print_d("Allreduce done", Level.DEBUG)
     # Dividing result by the number of devices
     send /= float(size)

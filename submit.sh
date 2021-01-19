@@ -13,7 +13,7 @@
 #! Note that the job submission script will enforce no more than 3 cpus per GPU.
 #SBATCH --gres=gpu:2
 #! How much wallclock time will be required?
-#SBATCH --time=00:10:00
+#SBATCH --time=00:20:00
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=ALL
 #! Uncomment this to prevent the job from being requeued (e.g. if
@@ -47,7 +47,7 @@ echo $total_gpus
 application="python3 src/new_main.py"
 
 #! Run options for the application:
-options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 2 2 $ip_addr ib0 imagenet /rds/user/dz308/hpc-work 1 --job_id $SLURM_JOB_ID --experiment experiment1"
+options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 2 2 $ip_addr ib0 imagenet /rds/user/dz308/hpc-work 1 --job_id $SLURM_JOB_ID --experiment experiment1 --limit_batches 30"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory

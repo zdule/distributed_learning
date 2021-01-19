@@ -26,6 +26,7 @@ from config import parse_args
 pgroups = []
 
 def worker_process(node_id, worker_id, config, reducer, gpu_reduce=False):
+    print_d(f"Starting experiment {config.experiment}, {datetime.datetime.now()}", Level.INFO)
     torch.manual_seed(1234)
     train_set = config.get_partition_dataset(node_id, worker_id, config.node_dev, config.total_dev, config.dataset_root)
     device = config.devices[worker_id]
@@ -176,7 +177,10 @@ def main_overlap(config):
 
 def main_ddp(config):
     def distribute_model(model, reducer, grouping_size, _grad_buffer_device="cpu"):
-        dmodel = DDP(model, device_ids=None, bucket_cap_mb=grouping_size/1024/1024, find_unused_parameters=True)
+        device_ids = None
+        if config.devices[0] != "cpu":
+            device_ids = [config.device_id]
+        dmodel = DDP(model, device_ids=device_ids, bucket_cap_mb=grouping_size/1024/1024, find_unused_parameters=True)
         dmodel.sync_gradients = lambda:None
         dmodel.cleanup = lambda:None
         dmodel.parameters = lambda: model.parameters()
@@ -263,5 +267,9 @@ if __name__ == "__main__":
     os.makedirs(config.folder, exist_ok=True)
     torch.multiprocessing.set_start_method('spawn')
     init_process(config)
+
+    if config.node_dev == 1 and config.devices[0].startswith("cuda"):
+        config.device_id = config.rank%torch.cuda.device_count()
+        config.devices = [f"cuda:{config.device_id}" for _ in config.devices]
     #experiment1(config)
     globals()[config.experiment](config)
