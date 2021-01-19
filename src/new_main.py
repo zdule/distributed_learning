@@ -209,6 +209,13 @@ def main_onestep_reduce(config):
 
     worker_process(config.rank, 0, config, cpu_reducer)
 
+def main_onestep_central(config):
+    config.distribute_model = OurDist
+    cpu_reducer = ReduceImmediatelly(central_allreduce)
+    config.experiment_name = "onestep_central"
+
+    worker_process(config.rank, 0, config, cpu_reducer)
+
 def main_onestep_overlap(config):
     config.distribute_model = OurDist
     cpu_reducer = ReduceImmediatelly(ring_allreduce)
@@ -264,6 +271,14 @@ def experiment_nccl(config):
 def experiment_ourdist_nccl(config):
     main_warmup(config)
     main_ourdist_nccl(config)
+
+def experiment_single(config):
+    main_warmup(config)
+    main_single(config)
+
+def experiment_onestep_central(config):
+    main_warmup(config)
+    main_onestep_central(config)
 
 fusion_test_sizes_k = [1024, 4*1024, 16*1024, 64*1024]
 def fusion_experiment(config, main_f):
