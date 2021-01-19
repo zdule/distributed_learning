@@ -209,6 +209,23 @@ def main_onestep_reduce(config):
 
     worker_process(config.rank, 0, config, cpu_reducer)
 
+def main_onestep_overlap(config):
+    config.distribute_model = OurDist
+    cpu_reducer = ReduceImmediatelly(ring_allreduce)
+    config.experiment_name = "onestep_overlap"
+    old_grouping = config.grouping_size
+    config.grouping_size = 0
+
+    worker_process(config.rank, 0, config, cpu_reducer)
+    config.grouping_size = old_grouping
+
+def main_onestep_seq_merge(config):
+    config.distribute_model = SeqMergeDist
+    cpu_reducer = ReduceImmediatelly(ring_allreduce)
+    config.experiment_name = "onestep_seq_merge"
+
+    worker_process(config.rank, 0, config, cpu_reducer)
+
 def main_single(config):
     def distribute_model(model, reducer, grouping_size, _grad_buffer_device="cpu"):
         model.sync_gradients = lambda:None
@@ -231,6 +248,13 @@ def experiment2(config):
     main_warmup(config)
     main_ddp(config)
     main_onestep_reduce(config)
+
+def experiment3(config):
+    main_warmup(config)
+    main_ddp(config)
+    main_onestep_reduce(config)
+    main_onestep_seq_merge(config)
+    main_onestep_overlap(config)
 
 def experiment_nccl(config):
     main_warmup(config)

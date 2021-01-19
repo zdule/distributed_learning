@@ -4,7 +4,7 @@ import torch.random
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 
-PER_WORKER_BATCH_SIZE = 128
+PER_WORKER_BATCH_SIZE = 16
 
 
 class Partition(object):

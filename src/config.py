@@ -35,7 +35,6 @@ def parse_args():
                         help='which experiment function to run')
     parser.add_argument('--backend', dest='backend', type=str, default="gloo",
                         help='which experiment function to run')
-
     config = parser.parse_args()
     config.size = int(eval_arg(config.size))
     config.rank = int(eval_arg(config.rank))
