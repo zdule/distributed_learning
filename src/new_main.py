@@ -22,13 +22,14 @@ from allreduce import built_in_allreduce, ring_allreduce, ring_allreduce_gpu, ce
 from reducers import NodeAgreggateReducerCPU, ReduceImmediatelly
 from ourdist import OurDist, SeqDist, SeqMergeDist, WarmupDist
 from config import parse_args
+from data import random_data_generator
 
 pgroups = []
 
 def worker_process(node_id, worker_id, config, reducer, gpu_reduce=False):
     print_d(f"Starting experiment {config.experiment}, {datetime.datetime.now()}", Level.INFO)
     torch.manual_seed(1234)
-    train_set = config.get_partition_dataset(node_id, worker_id, config.node_dev, config.total_dev, config.dataset_root)
+    train_set = config.get_partition_dataset(node_id, worker_id, config.node_dev, config.total_dev, config.dataset_root, config.batch_size)
     device = config.devices[worker_id]
     model = config.create_network().to(device)
     model = config.distribute_model(model, reducer, config.grouping_size, "cpu" if not gpu_reduce else device)
@@ -45,6 +46,8 @@ def worker_process(node_id, worker_id, config, reducer, gpu_reduce=False):
         if batch_count >= config.limit_batches:
             break
         gener = train_set.__iter__()
+        if config.random_input:
+            gener = random_data_generator(next(gener)) 
         while True:
             if batch_count >= config.limit_batches:
                 break
@@ -255,6 +258,7 @@ def experiment2(config):
     main_warmup(config)
     main_ddp(config)
     main_onestep_reduce(config)
+    main_onestep_central(config)
 
 def experiment3(config):
     main_warmup(config)

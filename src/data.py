@@ -4,7 +4,7 @@ import torch.random
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 
-PER_WORKER_BATCH_SIZE = 16
+PER_WORKER_BATCH_SIZE = 128
 
 
 class Partition(object):
@@ -41,36 +41,34 @@ class DataPartitioner(object):
         return Partition(self.data, self.partitions[partition])
 
 
-def _partition_helper(node_dev, total_dev, dataset):
+def _partition_helper(node_dev, total_dev, dataset, batch_size=PER_WORKER_BATCH_SIZE):
     """ 
     Partitioning the given dataset. We assume each node has the same number of devices.
     """
 
-    bsz = PER_WORKER_BATCH_SIZE
-    partition = DataPartitioner(dataset, total_dev, bsz)
+    partition = DataPartitioner(dataset, total_dev, batch_size)
     partitions = [partition.use(dist.get_rank() * node_dev + i)
                   for i in range(node_dev)]
     train_sets = [torch.utils.data.DataLoader(partition,
-                                              batch_size=int(bsz),
+                                              batch_size=int(batch_size),
                                               shuffle=True)
                   for partition in partitions]
-    return train_sets, bsz
+    return train_sets, batch_size
 
-def _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset):
+def _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset, batch_size=PER_WORKER_BATCH_SIZE):
     """ 
     Get one partition from a given dataset.
     """
 
-    bsz = PER_WORKER_BATCH_SIZE
-    partitioner = DataPartitioner(dataset, total_dev, bsz)
+    partitioner = DataPartitioner(dataset, total_dev, batch_size)
     partition = partitioner.use(node_id * node_dev + worker_id)
     train_set = torch.utils.data.DataLoader(partition,
-                                              batch_size=int(bsz),
+                                              batch_size=int(batch_size),
                                               shuffle=True, num_workers = 2)
     return train_set
 
 
-def partition_mnist(node_dev, total_dev, dataset):
+def partition_mnist(node_dev, total_dev, dataset, batch_size=PER_WORKER_BATCH_SIZE):
     """ 
     Loads and partitions the MNIST dataset
     """
@@ -81,9 +79,9 @@ def partition_mnist(node_dev, total_dev, dataset):
                                  transforms.Normalize((0.1307,), (0.3081,))
                              ]))
 
-    return _partition_helper(node_dev, total_dev, dataset)
+    return _partition_helper(node_dev, total_dev, dataset, batch_size)
 
-def get_partition_mnist(node_id, worker_id, node_dev, total_dev, dataset):
+def get_partition_mnist(node_id, worker_id, node_dev, total_dev, dataset, batch_size=PER_WORKER_BATCH_SIZE):
     """ 
     Loads and partitions the MNIST dataset
     """
@@ -94,9 +92,9 @@ def get_partition_mnist(node_id, worker_id, node_dev, total_dev, dataset):
                                  transforms.Normalize((0.1307,), (0.3081,))
                              ]))
 
-    return _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset)
+    return _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset, batch_size)
 
-def partition_image_folder(node_dev, total_dev, dataset_root):
+def partition_image_folder(node_dev, total_dev, dataset_root, batch_size=PER_WORKER_BATCH_SIZE):
     """ 
     Loads one partition of the ImageFolder dataset
     """
@@ -110,9 +108,9 @@ def partition_image_folder(node_dev, total_dev, dataset_root):
                                     normalize
                                 ]))
 
-    return _partition_helper(node_dev, total_dev, dataset)
+    return _partition_helper(node_dev, total_dev, dataset, batch_size)
 
-def get_partition_image_folder(node_id, worker_id, node_dev, total_dev, dataset_root):
+def get_partition_image_folder(node_id, worker_id, node_dev, total_dev, dataset_root, batch_size=PER_WORKER_BATCH_SIZE):
     """ 
     Loads one partition of the ImageFolder dataset
     """
@@ -126,4 +124,9 @@ def get_partition_image_folder(node_id, worker_id, node_dev, total_dev, dataset_
                                     normalize
                                 ]))
 
-    return _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset)
+    return _get_partition_helper(node_id, worker_id, node_dev, total_dev, dataset, batch_size)
+
+def random_data_generator(data_pair):
+    data, target = data_pair
+    while True:
+        yield torch.rand_like(data), torch.randint_like(target,high=target.max()+1)
