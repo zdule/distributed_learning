@@ -1,3 +1,5 @@
 data
 .vscode
+*.csv
+*.txt
 __pycache__
