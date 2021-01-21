@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #! Name of the job:
-#SBATCH -J ex1x2
+#SBATCH -J ex1x1
 #! Which project should be charged (NB Wilkes2 projects end in '-GPU'):
 #SBATCH -A LANE-SL3-GPU 
 #! How many whole nodes should be allocated?
@@ -11,7 +11,7 @@
 #SBATCH --ntasks=1
 #! Specify the number of GPUs per node (between 1 and 4; must be 4 if nodes>1).
 #! Note that the job submission script will enforce no more than 3 cpus per GPU.
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #! How much wallclock time will be required?
 #SBATCH --time=00:20:00
 #! What types of email messages do you wish to receive?
@@ -47,7 +47,7 @@ echo $total_gpus
 application="python3 src/new_main.py"
 
 #! Run options for the application:
-options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 2 2 $ip_addr ib0 imagenet /rds/user/dz308/hpc-work 1 --job_id $SLURM_JOB_ID --experiment experiment1 --limit_batches 30 --random_input 1"
+options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 1 1 $ip_addr ib0 imagenet /rds/user/dz308/hpc-work 1 --job_id $SLURM_JOB_ID --experiment experiment1 --limit_batches 30 --random_input 1"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory
