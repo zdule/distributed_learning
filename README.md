@@ -1,6 +1,6 @@
 # De-centralised Data Parallel Distributed Learning
 
-This project was created for the Cambridge PART III L46 (Principles of Machine Learning Systems course).
+This project was created for the Cambridge PART III L46 (Principles of Machine Learning Systems) course.
 
 ## Description
 A PyTorch re-implementation of the Horovod distributed learning framework for multi-GPU and multi-node environments.
