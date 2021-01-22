@@ -35,6 +35,11 @@ def parse_args():
                         help='which experiment function to run')
     parser.add_argument('--backend', dest='backend', type=str, default="gloo",
                         help='which experiment function to run')
+    parser.add_argument('--batch_size', dest='batch_size', type=int, default="128",
+                        help='batch_size')
+    parser.add_argument('--random_input', dest='random_input', type=int, default=0,
+                        help='Generate random training data instead of loading data from the dataset. \
+                        Note that the dataset still needs to be accessible in order to replicate the input format.')
     config = parser.parse_args()
     config.size = int(eval_arg(config.size))
     config.rank = int(eval_arg(config.rank))

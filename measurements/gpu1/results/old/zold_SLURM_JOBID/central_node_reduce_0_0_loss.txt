@@ -1,0 +1,3 @@
+Worker 0:0 loss for batch 0: 6.973069667816162
+Worker 0:0 loss for batch 1: 6.903826713562012
+Worker 0:0 loss for batch 2: 6.779411792755127
