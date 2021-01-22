@@ -61,7 +61,7 @@ ip_addr=`ip addr show ib0 | grep -Po 'inet \K[\d.]+'`
 echo $ip_addr
 
 #! Full path to application executable: 
-application="python3 src/new_main.py"
+application="python3 src/main.py"
 
 #! Run options for the application:
 options="envarg://PMI_SIZE envarg://PMI_RANK 1 8 $ip_addr ib0 imagenet /rds/user/dz308/hpc-work 0 --job_id $SLURM_JOB_ID --experiment experiment3 --limit_batches 80 --random_input 1 --batch_size 4"

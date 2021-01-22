@@ -1,363 +1,333 @@
-import os
-import math
-import sys
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.optim as optim
 import torch.random
 
-from network import BasicNet, GoogLeNet
-from data import partition_mnist, partition_image_folder
-from utils import Level, print_d, eval_arg
+import os, sys
 import traceback
 import threading
+import datetime
 
-from timing import start_timing_experiment, start_timer, end_timer, writeout_timer
+from itertools import islice
+from types import SimpleNamespace
 
-EPOCH_NUM = 1
-sync_method = "fused"
+from utils import Level, print_d, eval_arg
 
-create_network = { "mnist" : BasicNet, "imagenet" : GoogLeNet }
-partition_dataset = { "mnist" : partition_mnist, "imagenet" : partition_image_folder }
+from timing import end_timing_experiment, start_timer, end_timer, writeout_timer
+import time
+from allreduce import built_in_allreduce, ring_allreduce, ring_allreduce_gpu, central_allreduce
+from reducers import NodeAgreggateReducerCPU, ReduceImmediatelly
+from ourdist import OurDist, SeqDist, SeqMergeDist, WarmupDist
+from config import parse_args
+from data import random_data_generator
 
-def built_in_allreduce(send):
-    dist.all_reduce(send, op=dist.reduce_op.SUM)
-    send /= float(dist.get_world_size())
+pgroups = []
 
-
-def ring_all_reduce(send):
-    """
-    Custom ring all-reduce fucntion that averages the gradients.
-
-    :param send: The gradients computed at an individual node. The
-        function overwrites them with the shared averages.
-    """
-
-    rank = dist.get_rank()
-    size = dist.get_world_size()
-    if size <= 1:
-        return
-
-    chunks = torch.chunk(send, size)
-    maxsize = max((chunk.size() for chunk in chunks))
-    recv_buffer = torch.empty(maxsize, dtype=send.dtype)
-
-    right = (rank + 1) % size
-    left = (rank-1) % size
-
-    send_reqs = []
-
-    # First passDEBUG_LEVEL
-    for i in range(size - 1):
-        to_send = (rank-i) % size
-        to_recv = (to_send - 1) % size
-        send_reqs.append(dist.isend(chunks[to_send], right))
-        dist.recv(recv_buffer, left)        # Receiving needs to be blocking
-        chunks[to_recv][:] += recv_buffer[:len(chunks[to_recv])]
-
-    for send_req in send_reqs:
-        send_req.wait()     # Need to wait till sending is finished
-    send_reqs = []
-
-    # We now have result[r+1] on node with rank r
-
-    # Second pass
-    for i in range(size-1):
-        to_send = (rank - i + 1) % size
-        to_recv = (to_send - 1) % size
-        send_reqs.append(dist.isend(chunks[to_send], right))
-        dist.recv(recv_buffer, left)         # Receiving needs to be blocking
-        chunks[to_recv][:] = recv_buffer[:len(
-            chunks[to_recv])]  # [:] indicates deepcopy
-
-    for send_req in send_reqs:
-        send_req.wait()     # Need to wait till sending is finished
-
-    # Dividing result by the number of devices
-    send /= float(size)
-
-"""
-def move_gradients_to_cpu(model):
-    for param in model.parameters():
-        print(param.grad)
-        print(param)
-    return [param.grad.data.to("cpu") for param in model.parameters()]
-
-
-def move_gradients_to_gpu_and_optimise(model, grads, optimiser):
-    for i, param in enumerate(model.parameters()):
-        param.grad.data[:] = grads[i][:]
-    optimiser.step()
-"""
-
-def fusion_grouping_gen(model, do_print=False):
-    params = model.parameters()
-    finished = False
-    while not finished:
-        to_fuse = []
-        total_size = 0
-        while total_size < 40000:
-            nxt = next(params, None)
-            if nxt == None:
-                finished = True
-                break
-            if nxt.requires_grad == False or nxt.grad == None:
-                continue
-            nxt = nxt.grad.data
-            to_fuse.append(nxt)
-            total_size += nxt.numel()
-        if len(to_fuse) > 0:
-            yield to_fuse
-
-def load_fused_params_from_cpu(from_cpu_queue, model, device):
-    for to_fuse in fusion_grouping_gen(model):
-        result = from_cpu_queue.get()
-        curr = 0
-        for t in to_fuse:
-            t.view(-1)[:] = result[curr:curr+t.numel()]
-            curr += t.numel()
-        del result
-
-def load_params_from_cpu(from_cpu_queue, model, device):
-    for param in model.parameters():
-        if param.requires_grad == False or param.grad == None:
-            continue
-        result = from_cpu_queue.get()
-        result_dev = result.to(device)
-        del result
-        param.grad.data[:] = result_dev
-
-def fuse_to_cpu(tensors):
-    if len(tensors) == 0: return None
-    required_size = sum((t.numel() for t in tensors))
-    result = torch.empty(required_size, dtype=tensors[0].dtype)
-    curr = 0
-    for t in tensors:
-        result[curr:curr+t.numel()] = t.view(-1)[:]
-        curr += t.numel()
-    return result
-
-
-def gpu_process(device, train_set, to_cpu_queue, from_cpu_queue, network_type):
-    model = create_network[network_type]().to(device)
+def worker_process(node_id, worker_id, config, reducer, gpu_reduce=False):
+    print_d(f"Starting experiment {config.experiment}, {datetime.datetime.now()}", Level.INFO)
+    torch.manual_seed(1234)
+    train_set = config.get_partition_dataset(node_id, worker_id, config.node_dev, config.total_dev, config.dataset_root, config.batch_size)
+    device = config.devices[worker_id]
+    model = config.create_network().to(device)
+    model = config.distribute_model(model, reducer, config.grouping_size, "cpu" if not gpu_reduce else device)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
+   
+    config_f = open(f"{config.folder}/{config.experiment_name}_config.txt", "w") 
+    config_f.write(str(config))
+    config_f.close()
+    loss_f = open(f"{config.folder}/{config.experiment_name}_{node_id}_{worker_id}_loss.txt", "w")
+    
+    start_time = time.time()
+    batch_count = 0
+    for epoch in range(config.epoch_count):
+        if batch_count >= config.limit_batches:
+            break
+        gener = train_set.__iter__()
+        if config.random_input:
+            gener = random_data_generator(next(gener)) 
+        while True:
+            if batch_count >= config.limit_batches:
+                break
+            start_timer("batch")
 
-    worker_loss = 0
+            start_timer("get_data")
+            nx = next(gener, None)
+            if nx == None: break
+            data, target = nx
+            end_timer("get_data")
 
-    start_timing_experiment("Run")
-    for epoch in range(EPOCH_NUM):
-        print_d(f"GPU: Starting epoch {epoch}", Level.INFO)
 
-        itr = 0
-        for data, target in train_set:
-            sys.stderr.flush()
-            itr += 1
-            if itr > 2: break
-
-            print_d("GPU: Moving training data to GPU", Level.DEBUG)
-            start_timer("data2gpu")
+            print_d("WORKER: Moving training data to device", Level.DEBUG)
+            start_timer("data2dev")
             data, target = data.to(device), target.to(device)
-            end_timer("data2gpu")
+            end_timer("data2dev")
+            
+            start_timer("zero_grad")
             optimizer.zero_grad()
+            end_timer("zero_grad")
 
             # Feed forward
-            print_d("GPU: Perfroming feed forward and backprop", Level.DEBUG)
-            start_timer("compute")
+            print_d("WORKER: Perfroming feed forward", Level.DEBUG)
+            start_timer("forward")
             output = model(data)
             loss = F.nll_loss(output, target)
-            end_timer("compute")
+            end_timer("forward")
 
-            start_timer("backprop")
             # Backpropagation
+            print_d("WORKER: Perfroming backprop", Level.DEBUG)
+            start_timer("backprop")
             loss.backward()
             end_timer("backprop")
-
-            # Share result to CPU and read back
-            print_d("GPU: Communicating with CPU", Level.DEBUG)
-            start_timer("sync")
-            if sync_method == "sync":
-                for param in model.parameters():
-                    if param.requires_grad == False or param.grad == None:
-                        continue
-                    print_d("GPU: Sending local grad", Level.DEBUG)
-                    to_cpu_queue.put(param.grad.data)
-
-                    print_d("GPU: Receving global grad", Level.DEBUG)
-                    result = from_cpu_queue.get()
-                    result_dev = result.to(device)
-                    del result
-                    param.grad.data[:] = result_dev
-            elif sync_method == "async":
-                print("async")
-                t = threading.Thread(target=load_params_from_cpu, args=(from_cpu_queue, model, device))
-                t.start()
-                for param in model.parameters():
-                    if param.requires_grad == False or param.grad == None:
-                        continue
-                    print_d("GPU: Sending local grad", Level.DEBUG)
-                    to_cpu_queue.put(param.grad.data.to("cpu"))
-                t.join()
-            else:
-                print("fused")
-                t = threading.Thread(target=load_fused_params_from_cpu, args=(from_cpu_queue, model, device))
-                t.start()
-                params = model.parameters()
-                finished = False
-                for to_fuse in fusion_grouping_gen(model):
-                    fused = fuse_to_cpu(to_fuse)
-                    to_cpu_queue.put(fused)
-                t.join()
-
-            # Send back loss for this batch (this also signals
-            # that everything has been received)
-
-            print_d("GPU: Sending loss to CPU", Level.DEBUG)
-            worker_loss = loss.item()
-            to_cpu_queue.put(worker_loss)
+   
+            start_timer("sync") 
+            model.sync_gradients()
             end_timer("sync")
- 
+
+            # Optimizer step 
             start_timer("optimizer_step")
             optimizer.step()
             end_timer("optimizer_step")
-    writeout_timer("times.csv")
 
+            loss_message = f"Worker {node_id}:{worker_id} loss for batch {batch_count}: {loss}"
+            print_d(loss_message, Level.DEBUG)
+            loss_f.write(loss_message + "\n")
+            end_timer("batch")
+            end_timing_experiment(config.experiment_name, extra_fields={"batch_count" : batch_count, "data_len" : data.size(0)})
+            batch_count += 1
 
-def gpu_process_wrapper(*args):
+    end_time = time.time()
+
+    loss_f.close()
+    model.cleanup()
+    reducer.cleanup()
+
+    writeout_timer(f"{config.folder}/{config.experiment_name}_{node_id}_{worker_id}_times.csv")
+
+def worker_process_wrapper(*args):
     try:
-        gpu_process(*args)
+        worker_process(*args)
     except Exception as e:
         traceback.print_exc(file=sys.stdout)
         sys.stdout.flush()
 
-def prime_model(model, sample, network_type):
-    print_d("Priming CPU model", Level.DEBUG)
-    data, target = sample
-    output = model(data)
-    loss = F.nll_loss(output, target)
-    loss.backward()
-    print_d("Done priming CPU model", Level.DEBUG)
+def main_warmup(config):
+    config.distribute_model = WarmupDist
+    dummy_reducer = SimpleNamespace(cleanup=print)
+    config.experiment_name = "warmup"
 
-def main_process(rank, size, node_dev, total_dev, network_type, dataset_root):
-    torch.manual_seed(1234)
-    train_sets, bsz = partition_dataset[network_type](node_dev, total_dev, dataset_root)
-    num_batches = len(train_sets[0])
-
-    #devices = [torch.device("cuda:{}".format(i)) for i in range(node_dev)]
-    devices = [torch.device("cpu") for i in range(node_dev)]
-    to_cpu_queues = [mp.Queue(maxsize=50) for _ in devices]
-    from_cpu_queues = [mp.Queue() for _ in devices]
-
-    buffer_model = create_network[network_type]()
-    prime_model(buffer_model, train_sets[0].__iter__().next(), network_type)
-
-    for args in zip(devices, train_sets, to_cpu_queues, from_cpu_queues, [network_type] * node_dev):
-        p = mp.Process(target=gpu_process_wrapper, args=args)
+    procs = []
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, dummy_reducer))
         p.start()
+        procs.append(p)
+    for p in procs:
+        p.join()
 
-    for epoch in range(EPOCH_NUM):
-        epoch_losses = [0.0 for _ in devices]
-        print_d(f"CPU: Starting epoch {epoch}", Level.INFO)
+def main_ourdist(config):
+    config.distribute_model = OurDist
+    cpu_reducer = NodeAgreggateReducerCPU(ring_allreduce, config.node_dev)
+    config.experiment_name = "ourdist"
 
-        itr = 0
-        for b in range(num_batches):
-            itr += 1
-            if itr > 2: break
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, cpu_reducer.reducers[i]))
+        p.start()
+    cpu_reducer.pump()
 
-            print_d(f"CPU: Starting batch {b}", Level.DEBUG)
-            # Reset the collected parameters
-            for param in buffer_model.parameters():
-                if param.requires_grad == False or param.grad == None:
-                    continue
-                param.grad.data[:] = 0
-                param.data[:] = 0
+def main_ourdist_nccl(config):
+    config.distribute_model = OurDist
+    cpu_reducer = NodeAgreggateReducerCPU(ring_allreduce_gpu, config.node_dev, pgroups)
+    config.experiment_name = "ourdist_nccl"
 
- 
-            print_d(f"CPU: Receiving local grad from GPUs", Level.DEBUG)
-            if sync_method == "sync" or sync_method == "async":
-                print_d("Not Fused", Level.DEBUG)
-                for param in buffer_model.parameters():
-                    for que in to_cpu_queues:
-                        received = que.get()
-                        received_cpu = received.to("cpu")
-                        del received
-                        param[:] += received_cpu[:]
-                    param[:] /= float(node_dev)
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, cpu_reducer.reducers[i], True))
+        p.start()
+    cpu_reducer.pump()
 
-                    print_d(f"CPU: Performing allreduce", Level.DEBUG)
-                    ring_all_reduce(param)
-                    print_d(f"CPU: Sending global grad to GPUs", Level.DEBUG)
-                    for que in from_cpu_queues:
-                        que.put(param.detach())
-            else:
-                for to_fuse in fusion_grouping_gen(buffer_model, do_print=True):
-                    print_d(f"CPU: Receiving local grad from GPUs", Level.DEBUG)
-                    param = torch.zeros(sum((t.numel() for t in to_fuse)), dtype = to_fuse[0].dtype)
-                    for que in to_cpu_queues:
-                        received = que.get()
-                        param[:] += received
-                    param[:] /= float(node_dev)
-                    print_d(f"Getting tensor {param.numel()}", Level.INFO)
+def main_seq(config):
+    config.distribute_model = SeqDist
+    cpu_reducer = NodeAgreggateReducerCPU(ring_allreduce, config.node_dev)
 
-                    print_d(f"CPU: Performing allreduce", Level.DEBUG)
-                    ring_all_reduce(param)
-                    print_d(f"CPU: Sending global grad to GPUs", Level.DEBUG)
-                    for que in from_cpu_queues:
-                        que.put(param.detach())
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i,config, cpu_reducer.reducers[i]))
+        p.start()
+    cpu_reducer.pump()
 
-            # Grab the loss from workers
-            print_d(f"CPU: Receiving loss from GPUs", Level.DEBUG)
-            for i, que in enumerate(to_cpu_queues):
-                rec = que.get()
-                epoch_losses[i] += rec
-                print(epoch_losses[i])
+def main_seq_merge(config):
+    config.distribute_model = SeqMergeDist
+    cpu_reducer = NodeAgreggateReducerCPU(ring_allreduce, config.node_dev)
+    config.experiment_name = "seq_merge"
 
-        print('Rank ', dist.get_rank(), ', epoch ',
-              epoch, ': ', sum(epoch_losses) / num_batches / node_dev)
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i,config, cpu_reducer.reducers[i]))
+        p.start()
+    cpu_reducer.pump()
 
+def main_overlap(config):
+    config.distribute_model = OurDist
+    cpu_reducer = NodeAgreggateReducerCPU(ring_allreduce, config.node_dev)
+    config.experiment_name = "overlap"
+    old_grouping = config.grouping_size
+    config.grouping_size = 0
 
-def main_process_wrapper(*args):
-    try:
-        main_process(*args)
-    except Exception as e:
-        traceback.print_exc(file=sys.stdout)
-        sys.stdout.flush()
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, cpu_reducer.reducers[i]))
+        p.start()
+    cpu_reducer.pump()
+    config.grouping_size = old_grouping
 
+def main_ddp(config):
+    def distribute_model(model, reducer, grouping_size, _grad_buffer_device="cpu"):
+        device_ids = None
+        if config.devices[0] != "cpu":
+            device_ids = [config.device_id]
+        dmodel = DDP(model, device_ids=device_ids, bucket_cap_mb=grouping_size/1024/1024, find_unused_parameters=True)
+        dmodel.sync_gradients = lambda:None
+        dmodel.cleanup = lambda:None
+        dmodel.parameters = lambda: model.parameters()
+        return dmodel
 
-def init_process(rank, size, node_dev, total_dev, master_addr, ifname, network_type, dataset_root, fn, backend='gloo'):
+    dummy_reducer = SimpleNamespace(cleanup=lambda:None)
+    config.distribute_model = distribute_model
+    config.experiment_name = "ddp"
+
+    worker_process(config.rank, 0, config, dummy_reducer)
+
+def main_central_reduce(config):
+    config.distribute_model = OurDist
+    cpu_reducer = NodeAgreggateReducerCPU(central_allreduce, config.node_dev)
+    config.experiment_name = "central_node_reduce"
+
+    for i in range(config.node_dev):
+        p = mp.Process(target=worker_process_wrapper, args=(config.rank, i, config, cpu_reducer.reducers[i]))
+        p.start()
+    cpu_reducer.pump()
+
+def main_onestep_reduce(config):
+    config.distribute_model = OurDist
+    cpu_reducer = ReduceImmediatelly(ring_allreduce)
+    config.experiment_name = "onestep_reduce"
+
+    worker_process(config.rank, 0, config, cpu_reducer)
+
+def main_onestep_central(config):
+    config.distribute_model = OurDist
+    cpu_reducer = ReduceImmediatelly(central_allreduce)
+    config.experiment_name = "onestep_central"
+
+    worker_process(config.rank, 0, config, cpu_reducer)
+
+def main_onestep_overlap(config):
+    config.distribute_model = OurDist
+    cpu_reducer = ReduceImmediatelly(ring_allreduce)
+    config.experiment_name = "onestep_overlap"
+    old_grouping = config.grouping_size
+    config.grouping_size = 0
+
+    worker_process(config.rank, 0, config, cpu_reducer)
+    config.grouping_size = old_grouping
+
+def main_onestep_seq_merge(config):
+    config.distribute_model = SeqMergeDist
+    cpu_reducer = ReduceImmediatelly(ring_allreduce)
+    config.experiment_name = "onestep_seq_merge"
+
+    worker_process(config.rank, 0, config, cpu_reducer)
+
+def main_single(config):
+    def distribute_model(model, reducer, grouping_size, _grad_buffer_device="cpu"):
+        model.sync_gradients = lambda:None
+        model.cleanup = lambda:None
+        return model
+    config.distribute_model = distribute_model
+    dummy_reducer = SimpleNamespace(cleanup=lambda:None)
+    config.experiment_name = "single"
+
+    worker_process(0, 0, config, dummy_reducer)
+
+def experiment1(config):
+    main_warmup(config)
+    main_ourdist(config)
+    main_seq_merge(config)
+    main_overlap(config)
+    main_central_reduce(config)
+
+def experiment2(config):
+    main_warmup(config)
+    main_ddp(config)
+    main_onestep_reduce(config)
+    main_onestep_central(config)
+
+def experiment3(config):
+    main_warmup(config)
+    main_ddp(config)
+    main_onestep_reduce(config)
+    main_onestep_seq_merge(config)
+    main_onestep_overlap(config)
+
+def experiment_nccl(config):
+    main_warmup(config)
+    main_ddp(config)
+    main_ourdist_nccl(config)
+
+def experiment_ourdist_nccl(config):
+    main_warmup(config)
+    main_ourdist_nccl(config)
+
+def experiment_single(config):
+    main_warmup(config)
+    main_single(config)
+
+def experiment_onestep_central(config):
+    main_warmup(config)
+    main_onestep_central(config)
+
+fusion_test_sizes_k = [256, 1024, 4*1024, 16*1024, 64*1024]
+def fusion_experiment(config, main_f):
+    main_warmup(config)
+    folder_name = config.folder
+    for size_k in fusion_test_sizes_k:
+        config.grouping_size = size_k*1024
+        config.folder = folder_name + f"/{size_k}"
+        os.makedirs(config.folder, exist_ok=True)
+        main_f(config)
+
+def fusion_experiment_ddp(config):
+    fusion_experiment(config, main_ddp)
+
+def fusion_experiment_ourdist(config):
+    fusion_experiment(config, main_ourdist)
+
+def init_process(config):
     """ Initialize the distributed environment. """
-    os.environ['MASTER_ADDR'] = master_addr
+    print(config)
+    os.environ['MASTER_ADDR'] = config.master_addr
     os.environ['MASTER_PORT'] = '29501'
-    os.environ['GLOO_SOCKET_IFNAME'] = ifname
+    os.environ['GLOO_SOCKET_IFNAME'] = config.ifname
 
-    dist.init_process_group(backend, rank=rank, world_size=size)
+    dist.init_process_group(config.backend, rank=config.rank, world_size=config.size)
+    
+    global pgroups 
+    pgroups = []
+    if config.size > 1:
+        for i in range(config.size):
+            pgroups.append(dist.new_group([i,(i+1)%config.size]))
 
     print("Connection initialised")
-    fn(rank, size, node_dev, total_dev, network_type, dataset_root)
 
 
 if __name__ == "__main__":
-    size = int(eval_arg(sys.argv[1]))
-    rank = int(eval_arg(sys.argv[2]))
-    node_dev = int(eval_arg(sys.argv[3]))
-    total_dev = int(eval_arg(sys.argv[4]))
-    master_addr = eval_arg(sys.argv[5])
-    ifname = eval_arg(sys.argv[6])
-    network_type = eval_arg(sys.argv[7])
-    if len(sys.argv) < 9:
-        dataset_root = "../data"
-    else:
-        dataset_root = eval_arg(sys.argv[8])
-
+    print_d(f"Number of available devices {torch.cuda.device_count()}", Level.INFO)
+    config = parse_args()
+    config.folder = f"results/{config.experiment}_{config.total_dev}_{config.job_id}"
+    os.makedirs(config.folder, exist_ok=True)
     torch.multiprocessing.set_start_method('spawn')
-    p = mp.Process(target=init_process, args=(
-        rank, size, node_dev, total_dev, master_addr, ifname, network_type, dataset_root, main_process_wrapper))
+    init_process(config)
 
-    try:
-        p.start()
-        p.join()
-    except KeyboardInterrupt:
-        print("Shutting down...")
-        p.kill()
-        sys.exit(0)
+    if config.node_dev == 1 and config.devices[0].startswith("cuda"):
+        config.device_id = config.rank%torch.cuda.device_count()
+        config.devices = [f"cuda:{config.device_id}" for _ in config.devices]
+    #experiment1(config)
+    globals()[config.experiment](config)

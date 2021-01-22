@@ -44,7 +44,7 @@ total_gpus=$[${numtasks}*4]
 echo $total_gpus
 
 #! Full path to application executable: 
-application="python3 src/new_main.py"
+application="python3 src/main.py"
 
 #! Run options for the application:
 options="envarg://OMPI_COMM_WORLD_SIZE envarg://OMPI_COMM_WORLD_RANK 1 16 $ip_addr ib0 imagenet /rds/user/dz308/hpc-work 1 --job_id $SLURM_JOB_ID --experiment experiment2 --limit_batches 30 --random_input 1"
